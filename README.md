@@ -1,2 +1,3 @@
-#MSP432 Smart Charger
-Project of the course "Embedded Software for the Internet of Things"
+# MSP432 Smart Charger
+Project for the course of "Embedded Software for the Internet of Things", University of Trento 2025/2026
+
