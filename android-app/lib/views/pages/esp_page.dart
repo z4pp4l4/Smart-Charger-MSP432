@@ -1,0 +1,455 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:app_settings/app_settings.dart';
+import 'package:battery_plus/battery_plus.dart';
+import '../../models/user_profile.dart';
+
+// Match the 128-bit UUIDs from ESP32
+const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const String SETTINGS_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+const String STATUS_CHAR_UUID = "8b11b57c-ed1a-466d-8e42-99a341f22e70";
+
+class EspPage extends StatefulWidget {
+  final UserProfile profile;
+  const EspPage({super.key, required this.profile});
+
+  @override
+  State<EspPage> createState() => _EspPageState();
+}
+
+class _EspPageState extends State<EspPage> {
+  final Battery _battery = Battery();
+  bool isConnected = false;
+  bool isScanning = false;
+  List<ScanResult> scanResults = [];
+  StreamSubscription<List<ScanResult>>? _scanSubscription;
+  StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
+  StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
+  StreamSubscription<List<int>>? _statusSubscription;
+  Timer? _connectedDeviceTimer;
+  Timer? _heartbeatTimer;
+  BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? settingsCharacteristic;
+  BluetoothCharacteristic? statusCharacteristic;
+
+  // Phone Data
+  int phoneBatteryLevel = 0;
+
+  // ESP32 Data (Live)
+  int extBatteryLevel = 0;
+  double temperature = 0.0;
+  int current = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _initBattery();
+    
+    _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
+      if (mounted && state != BluetoothAdapterState.on) {
+        _cleanupConnection();
+      }
+    });
+    
+    _connectedDeviceTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (!isConnected) _checkAlreadyConnectedDevices();
+    });
+
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (isConnected) _sendDataToESP32();
+    });
+  }
+
+  Future<void> _initBattery() async {
+    final level = await _battery.batteryLevel;
+    if (mounted) setState(() => phoneBatteryLevel = level);
+    
+    _battery.onBatteryStateChanged.listen((state) async {
+       final level = await _battery.batteryLevel;
+       if (mounted) {
+         setState(() => phoneBatteryLevel = level);
+         if (isConnected) _sendDataToESP32();
+       }
+    });
+  }
+
+  void _cleanupConnection() {
+    setState(() {
+      isConnected = false;
+      connectedDevice = null;
+      settingsCharacteristic = null;
+      statusCharacteristic = null;
+    });
+    _statusSubscription?.cancel();
+  }
+
+  Future<void> _checkAlreadyConnectedDevices() async {
+    try {
+      List<BluetoothDevice> connected = await FlutterBluePlus.connectedDevices;
+      if (connected.isNotEmpty && mounted && !isConnected) {
+        _connectToDevice(connected.first);
+      }
+    } catch (e) {
+      debugPrint("Error: $e");
+    }
+  }
+
+  @override
+  void dispose() {
+    _scanSubscription?.cancel();
+    _adapterStateSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _statusSubscription?.cancel();
+    _connectedDeviceTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _sendDataToESP32() async {
+    if (settingsCharacteristic == null) return;
+    try {
+      String payload = "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
+      await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
+      debugPrint("Sent Sync: $payload");
+    } catch (e) {
+      debugPrint("Send Error: $e");
+    }
+  }
+
+  Future<void> _connectToDevice(BluetoothDevice device) async {
+    try {
+      await FlutterBluePlus.stopScan();
+      await device.connect(autoConnect: false);
+
+      _connectionSubscription?.cancel();
+      _connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) _cleanupConnection();
+      });
+
+      List<BluetoothService> services = await device.discoverServices();
+      for (var service in services) {
+        if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
+          for (var char in service.characteristics) {
+            if (char.uuid.toString().toLowerCase() == SETTINGS_CHAR_UUID.toLowerCase()) {
+              settingsCharacteristic = char;
+            }
+
+            if (char.uuid.toString().toLowerCase() == STATUS_CHAR_UUID.toLowerCase()) {
+              statusCharacteristic = char;
+              _listenToESP(char);
+            }
+          }
+        }
+      }
+
+      // ✅ SAFETY CHECK
+      if (settingsCharacteristic == null) {
+        debugPrint("ERROR: settingsCharacteristic not found");
+      }
+
+      setState(() {
+        isConnected = true;
+        connectedDevice = device;
+      });
+
+      _sendDataToESP32();
+    } catch (e) {
+      debugPrint("Conn Error: $e");
+    }
+  }
+
+
+  void _listenToESP(BluetoothCharacteristic char) async {
+    await char.setNotifyValue(true);
+    _statusSubscription = char.onValueReceived.listen((value) {
+      if (value.isNotEmpty) {
+        String data = utf8.decode(value);
+        List<String> parts = data.split(':');
+        if (parts.length == 3) {
+          setState(() {
+            extBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
+            temperature = double.tryParse(parts[1]) ?? temperature;
+            current = int.tryParse(parts[2]) ?? current;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _handleConnectPressed() async {
+    bool hasPermissions = await _requestPermissions();
+    if (!hasPermissions) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Bluetooth and Location permissions are required.")),
+      );
+      return;
+    }
+    _showScanDialog();
+  }
+
+  Future<bool> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.location,
+      ].request();
+      return statuses.values.every((status) => status.isGranted);
+    }
+    return true;
+  }
+
+  void _showScanDialog() {
+    _startScan();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text("Search for BLE Devices", style: TextStyle(color: Colors.teal)),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: Column(
+              children: [
+                StreamBuilder<bool>(
+                  stream: FlutterBluePlus.isScanning,
+                  initialData: false,
+                  builder: (c, snapshot) {
+                    if (snapshot.data == true) {
+                      return const LinearProgressIndicator(color: Colors.teal);
+                    } else {
+                      return const SizedBox(height: 4);
+                    }
+                  },
+                ),
+                const SizedBox(height: 10),
+                ListTile(
+                  leading: const Icon(Icons.settings, color: Colors.teal),
+                  title: const Text("Don't see your device?", style: TextStyle(color: Colors.white, fontSize: 14)),
+                  subtitle: const Text("Open Bluetooth Settings", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+                  onTap: () => AppSettings.openAppSettings(type: AppSettingsType.bluetooth),
+                ),
+                const Divider(color: Colors.white10),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: scanResults.length,
+                    itemBuilder: (c, i) {
+                      final result = scanResults[i];
+                      final name = result.device.platformName.isEmpty 
+                          ? (result.advertisementData.localName.isEmpty ? "Unknown Device" : result.advertisementData.localName)
+                          : result.device.platformName;
+                      return ListTile(
+                        leading: const Icon(Icons.bluetooth, color: Colors.teal),
+                        title: Text(name, style: const TextStyle(color: Colors.white)),
+                        subtitle: Text(result.device.remoteId.toString(), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                        onTap: () {
+                          _connectToDevice(result.device);
+                          Navigator.pop(context);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                FlutterBluePlus.stopScan();
+                Navigator.pop(context);
+              },
+              child: const Text("Close"),
+            ),
+            StreamBuilder<bool>(
+              stream: FlutterBluePlus.isScanning,
+              initialData: false,
+              builder: (c, snapshot) {
+                if (snapshot.data == false) {
+                  return TextButton(
+                    onPressed: () {
+                      _startScan();
+                      setDialogState(() {});
+                    },
+                    child: const Text("Rescan", style: TextStyle(color: Colors.teal)),
+                  );
+                } else {
+                  return const SizedBox.shrink();
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _startScan() async {
+    setState(() => scanResults.clear());
+    try {
+      _scanSubscription?.cancel();
+      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+
+        // ✅ DEBUG VISIBILITY
+        for (var r in results) {
+          debugPrint("Found: ${r.device.platformName} | ${r.advertisementData.localName} | RSSI: ${r.rssi}");
+        }
+
+        if (mounted) {
+          setState(() {
+            results.sort((a, b) {
+              final aName = (a.device.platformName + a.advertisementData.localName).toLowerCase();
+              final bName = (b.device.platformName + b.advertisementData.localName).toLowerCase();
+
+              if (aName.contains("esp32")) return -1;
+              if (bName.contains("esp32")) return 1;
+
+              return b.rssi.compareTo(a.rssi);
+            });
+
+            scanResults = results.where((r) {
+              final name = (r.device.platformName + r.advertisementData.localName).toLowerCase();
+              return name.contains("esp32");
+            }).toList();
+          });
+        }
+      });
+
+      if (await FlutterBluePlus.isScanning.first) {
+        await FlutterBluePlus.stopScan();
+      }
+
+      await FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 15),
+        androidUsesFineLocation: true,
+      );
+    } catch (e) {
+      debugPrint("Scan Error: $e");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          _buildCard(
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isConnected ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                    color: isConnected ? Colors.green : Colors.red,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("ESP32 Connection", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      Text(
+                        isConnected ? (connectedDevice?.platformName.isNotEmpty == true
+                            ? connectedDevice!.platformName
+                            : "ESP32 Device") : "Disconnected",
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: isConnected ? () => connectedDevice?.disconnect() : _handleConnectPressed,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isConnected ? Colors.red.withOpacity(0.2) : Colors.teal,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: Text(isConnected ? "Disconnect" : "Connect"),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          AnimatedOpacity(
+            opacity: isConnected ? 1.0 : 0.35,
+            duration: const Duration(milliseconds: 300),
+            child: IgnorePointer(
+              ignoring: !isConnected,
+              child: Column(
+                children: [
+                  _buildCard(
+                    child: Column(
+                      children: [
+                        const Text("External Battery Level", style: TextStyle(color: Colors.white54)),
+                        const SizedBox(height: 10),
+                        Text("$extBatteryLevel%", style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.teal)),
+                        const SizedBox(height: 10),
+                        LinearProgressIndicator(
+                          value: extBatteryLevel / 100,
+                          backgroundColor: Colors.white12,
+                          color: Colors.teal,
+                        )
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _infoCard(Icons.thermostat, "Temp", "$temperature °C", Colors.orange)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.teal.withOpacity(0.3)),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _infoCard(IconData icon, String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}

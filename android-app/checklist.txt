@@ -1,0 +1,33 @@
+in phone page:
+* add the time remaining to fully charged (or to max thres if saving mode is enabled)
+in battery page:
+receive data about current, temp..
+eg:
+{
+  "battery": 65,
+  "charging": true,
+  "temp": 32,
+  "current": 900,
+  "eta": 45
+}
+
+
+Step 1
+👉 Battery Page UI (no BLE yet)
+Step 2
+👉 Add BLE scan + connect button
+Step 3
+👉 Send min/max/mode to ESP
+Step 4
+👉 Receive live data (stream)
+Step 5
+👉 Display ETA in PhonePage
+
+when sending data?
+i thought about exchanging once the bleutooth connection is set
+and then anytime we:
+ 1- on/off the saving data option
+ 2- modify a threshhold we do another exchange
+3- press the refresh button in phone page
+
+connection set either by device name or Service UUID (BEST 🔥)
