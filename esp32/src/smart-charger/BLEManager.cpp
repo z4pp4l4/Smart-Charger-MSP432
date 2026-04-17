@@ -4,7 +4,7 @@
 BLECharacteristic* BLEManager::pSettingsChar = nullptr;
 BLECharacteristic* BLEManager::pStatusChar = nullptr;
 bool BLEManager::_connected = false;
-bool BLEManager::manualOverride = false;
+bool BLEManager::savingMode = false;
 int BLEManager::minThreshold = 20;
 int BLEManager::maxThreshold = 80;
 int BLEManager::phoneBattery = 0;
@@ -74,10 +74,13 @@ void BLEManager::SettingsCallbacks::onWrite(BLECharacteristic *pCharacteristic) 
         int c3 = value.indexOf(':', c2 + 1);
 
         if (c1 != -1 && c2 != -1 && c3 != -1) {
-            manualOverride = (value.substring(0, c1) == "1");
+            savingMode = (value.substring(0, c1) == "1");
             minThreshold = value.substring(c1 + 1, c2).toInt();
             maxThreshold = value.substring(c2 + 1, c3).toInt();
             phoneBattery = value.substring(c3 + 1).toInt();
+
+            Serial.printf("Sync Received -> Mode: %s, Min: %d, Max: %d, Phone: %d%%\n",
+                savingMode ? "SAVING" : "NORMAL", minThreshold, maxThreshold, phoneBattery);
         }
     }
 }

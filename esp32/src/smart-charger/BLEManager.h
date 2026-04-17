@@ -17,7 +17,7 @@ public:
     static void pushStatus(int bat, float temp, int curr);
     static bool isConnected();
 
-    static bool manualOverride;
+    static bool savingMode;
     static int minThreshold;
     static int maxThreshold;
     static int phoneBattery;

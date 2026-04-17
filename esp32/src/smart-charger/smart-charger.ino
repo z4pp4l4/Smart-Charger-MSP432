@@ -34,15 +34,23 @@ void loop() {
         Serial.printf("Pushed Status -> Bat: %d, Temp: %.1f\n", mockBat, mockTemp);
     }
 
-    // 2. The core charging logic (Smart Mode)
-    // This only runs if the user hasn't turned on "Manual Override" in the app
-    if (!BLEManager::manualOverride) {
-        // If phone battery is below min, start charging
-        if (BLEManager::phoneBattery > 0 && BLEManager::phoneBattery < BLEManager::minThreshold) {
+    // 2. The core charging logic
+    int effectiveMin = 0;
+    int effectiveMax = 100;
+
+    if (BLEManager::savingMode) {
+        effectiveMin = BLEManager::minThreshold;
+        effectiveMax = BLEManager::maxThreshold;
+    }
+
+    // Logic:
+    // If phone battery is below min, start charging
+    // If phone battery reaches max, stop charging
+    if (BLEManager::phoneBattery > 0) {
+        if (BLEManager::phoneBattery < effectiveMin) {
             RelayControl::turnOn();
         }
-        // If phone battery reaches max, stop charging
-        else if (BLEManager::phoneBattery >= BLEManager::maxThreshold) {
+        else if (BLEManager::phoneBattery >= effectiveMax) {
             RelayControl::turnOff();
         }
     }

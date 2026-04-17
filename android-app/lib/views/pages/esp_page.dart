@@ -38,6 +38,7 @@ class _EspPageState extends State<EspPage> {
 
   // Phone Data
   int phoneBatteryLevel = 0;
+  String? lastSyncPayload;
 
   // ESP32 Data (Live)
   int extBatteryLevel = 0;
@@ -59,7 +60,7 @@ class _EspPageState extends State<EspPage> {
       if (!isConnected) _checkAlreadyConnectedDevices();
     });
 
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (isConnected) _sendDataToESP32();
     });
   }
@@ -114,6 +115,9 @@ class _EspPageState extends State<EspPage> {
     try {
       String payload = "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
       await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
+      setState(() {
+        lastSyncPayload = payload;
+      });
       debugPrint("Sent Sync: $payload");
     } catch (e) {
       debugPrint("Send Error: $e");
@@ -146,7 +150,6 @@ class _EspPageState extends State<EspPage> {
         }
       }
 
-      // ✅ SAFETY CHECK
       if (settingsCharacteristic == null) {
         debugPrint("ERROR: settingsCharacteristic not found");
       }
@@ -295,24 +298,15 @@ class _EspPageState extends State<EspPage> {
     try {
       _scanSubscription?.cancel();
       _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-
-        // ✅ DEBUG VISIBILITY
-        for (var r in results) {
-          debugPrint("Found: ${r.device.platformName} | ${r.advertisementData.localName} | RSSI: ${r.rssi}");
-        }
-
         if (mounted) {
           setState(() {
             results.sort((a, b) {
               final aName = (a.device.platformName + a.advertisementData.localName).toLowerCase();
               final bName = (b.device.platformName + b.advertisementData.localName).toLowerCase();
-
               if (aName.contains("esp32")) return -1;
               if (bName.contains("esp32")) return 1;
-
               return b.rssi.compareTo(a.rssi);
             });
-
             scanResults = results.where((r) {
               final name = (r.device.platformName + r.advertisementData.localName).toLowerCase();
               return name.contains("esp32");
@@ -383,6 +377,44 @@ class _EspPageState extends State<EspPage> {
             ),
           ),
           const SizedBox(height: 20),
+          
+          // --- App -> ESP32 Data ---
+          _buildCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.sync, color: Colors.teal, size: 20),
+                    SizedBox(width: 8),
+                    Text("Phone -> ESP32 Sync", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 15),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _syncItem("Saving Mode", widget.profile.savingMode ? "ON" : "OFF", widget.profile.savingMode ? Colors.orange : Colors.white54),
+                    _syncItem("Phone Battery", "$phoneBatteryLevel%", Colors.green),
+                  ],
+                ),
+                const SizedBox(height: 15),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _syncItem("Min Threshold", widget.profile.savingMode ? "${widget.profile.minThreshold}%" : "0%", Colors.white),
+                    _syncItem("Max Threshold", widget.profile.savingMode ? "${widget.profile.maxThreshold}%" : "100%", Colors.white),
+                  ],
+                ),
+                if (lastSyncPayload != null) ...[
+                  const Divider(color: Colors.white10, height: 20),
+                  Text("Last Payload: $lastSyncPayload", style: const TextStyle(color: Colors.white24, fontSize: 10, fontFamily: 'monospace')),
+                ]
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
           AnimatedOpacity(
             opacity: isConnected ? 1.0 : 0.35,
             duration: const Duration(milliseconds: 300),
@@ -393,7 +425,7 @@ class _EspPageState extends State<EspPage> {
                   _buildCard(
                     child: Column(
                       children: [
-                        const Text("External Battery Level", style: TextStyle(color: Colors.white54)),
+                        const Text("ESP32 External Battery", style: TextStyle(color: Colors.white54)),
                         const SizedBox(height: 10),
                         Text("$extBatteryLevel%", style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.teal)),
                         const SizedBox(height: 10),
@@ -422,8 +454,19 @@ class _EspPageState extends State<EspPage> {
     );
   }
 
+  Widget _syncItem(String label, String value, Color valueColor) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        Text(value, style: TextStyle(color: valueColor, fontSize: 16, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+
   Widget _buildCard({required Widget child}) {
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A2E),
@@ -447,6 +490,7 @@ class _EspPageState extends State<EspPage> {
           Icon(icon, color: color, size: 28),
           const SizedBox(height: 8),
           Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 4),
           Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         ],
       ),
