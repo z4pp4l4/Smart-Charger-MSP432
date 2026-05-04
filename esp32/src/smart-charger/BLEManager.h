@@ -14,7 +14,7 @@
 class BLEManager {
 public:
     static void init(const char* deviceName);
-    static void pushStatus(int bat, float temp, int curr);
+    static void pushStatus(int bat, float temp, int curr, bool relayOn);
     static bool isConnected();
 
     static bool savingMode;
