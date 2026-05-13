@@ -3,6 +3,10 @@ import 'dart:convert';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:battery_plus/battery_plus.dart';
 
+const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const String SETTINGS_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+const String STATUS_CHAR_UUID = "8b11b57c-ed1a-466d-8e42-99a341f22e70";
+
 class BleService {
   static final BleService _instance = BleService._internal();
   factory BleService() => _instance;
@@ -34,10 +38,13 @@ class BleService {
     
     List<BluetoothService> services = await device.discoverServices();
     for (var service in services) {
-      if (service.uuid.toString().contains("1234")) {
+      if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
         for (var char in service.characteristics) {
-          if (char.uuid.toString().contains("5678")) _settingsChar = char;
-          if (char.uuid.toString().contains("9ABC")) {
+          final uuid = char.uuid.toString().toLowerCase();
+          if (uuid == SETTINGS_CHAR_UUID.toLowerCase()) {
+            _settingsChar = char;
+          }
+          if (uuid == STATUS_CHAR_UUID.toLowerCase()) {
             _statusChar = char;
             _startListening(char);
           }
@@ -53,12 +60,16 @@ class BleService {
     char.onValueReceived.listen((value) {
       String data = utf8.decode(value);
       List<String> parts = data.split(':');
-      if (parts.length == 3) {
-        _statusController.add({
+      if (parts.length >= 3) {
+        final status = {
           'battery': int.tryParse(parts[0]) ?? 0,
           'temp': double.tryParse(parts[1]) ?? 0.0,
           'current': int.tryParse(parts[2]) ?? 0,
-        });
+        };
+        if (parts.length >= 4) {
+          status['relayOn'] = parts[3].trim() == '1';
+        }
+        _statusController.add(status);
       }
     });
   }

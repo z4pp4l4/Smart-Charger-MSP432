@@ -44,6 +44,7 @@ class _EspPageState extends State<EspPage> {
   int extBatteryLevel = 0;
   double temperature = 0.0;
   int current = 0;
+  bool relayOn = false;
 
   @override
   void initState() {
@@ -172,11 +173,14 @@ class _EspPageState extends State<EspPage> {
       if (value.isNotEmpty) {
         String data = utf8.decode(value);
         List<String> parts = data.split(':');
-        if (parts.length == 3) {
+        if (parts.length >= 3) {
           setState(() {
             extBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
             temperature = double.tryParse(parts[1]) ?? temperature;
             current = int.tryParse(parts[2]) ?? current;
+            if (parts.length >= 4) {
+              relayOn = parts[3].trim() == '1';
+            }
           });
         }
       }
@@ -444,6 +448,13 @@ class _EspPageState extends State<EspPage> {
                       const SizedBox(width: 12),
                       Expanded(child: _infoCard(Icons.thermostat, "Temp", "$temperature °C", Colors.orange)),
                     ],
+                  ),
+                  const SizedBox(height: 12),
+                  _infoCard(
+                    relayOn ? Icons.power : Icons.power_off,
+                    relayOn ? "Relay ON" : "Relay OFF",
+                    relayOn ? "Charging" : "Stopped",
+                    relayOn ? Colors.green : Colors.red,
                   ),
                 ],
               ),
