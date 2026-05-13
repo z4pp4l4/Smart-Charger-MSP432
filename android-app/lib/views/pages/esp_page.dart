@@ -42,8 +42,9 @@ class _EspPageState extends State<EspPage> {
 
   // ESP32 Data (Live)
   int extBatteryLevel = 0;
-  double temperature = 0.0;
+  double voltage = 0.0;
   int current = 0;
+  double power = 0.0;
   bool relayOn = false;
 
   @override
@@ -173,14 +174,14 @@ class _EspPageState extends State<EspPage> {
       if (value.isNotEmpty) {
         String data = utf8.decode(value);
         List<String> parts = data.split(':');
-        if (parts.length >= 3) {
+
+        if (parts.length >= 5) {
           setState(() {
             extBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
-            temperature = double.tryParse(parts[1]) ?? temperature;
+            voltage = double.tryParse(parts[1]) ?? voltage;
             current = int.tryParse(parts[2]) ?? current;
-            if (parts.length >= 4) {
-              relayOn = parts[3].trim() == '1';
-            }
+            power = double.tryParse(parts[3]) ?? power;
+            relayOn = parts[4].trim() == '1';
           });
         }
       }
@@ -446,9 +447,11 @@ class _EspPageState extends State<EspPage> {
                     children: [
                       Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
                       const SizedBox(width: 12),
-                      Expanded(child: _infoCard(Icons.thermostat, "Temp", "$temperature °C", Colors.orange)),
+                      Expanded(child: _infoCard(Icons.bolt, "Voltage", "${voltage.toStringAsFixed(2)} V", Colors.orange)),
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  _infoCard(Icons.electric_bolt, "Power", "${power.toStringAsFixed(1)} mW", Colors.purple),
                   const SizedBox(height: 12),
                   _infoCard(
                     relayOn ? Icons.power : Icons.power_off,

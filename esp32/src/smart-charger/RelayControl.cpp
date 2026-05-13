@@ -19,14 +19,14 @@ void RelayControl::turnOn() {
     if (!_initialized) return;
     _isOn = true;
     updateOutput();
-    Serial.println("Hardware: Relay ON");
+//Serial.println("Hardware: Relay ON");
 }
 
 void RelayControl::turnOff() {
     if (!_initialized) return;
     _isOn = false;
     updateOutput();
-    Serial.println("Hardware: Relay OFF");
+//  Serial.println("Hardware: Relay OFF");
 }
 
 bool RelayControl::isOn() {
