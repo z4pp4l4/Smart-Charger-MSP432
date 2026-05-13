@@ -1,40 +1,89 @@
 #include "BLEManager.h"
 #include "RelayControl.h"
 
-#define RELAY_PIN 23
+#include <Wire.h>
+#include <Adafruit_INA219.h>
 
-// Simulated telemetry data
-int mockBat = 75;
-float mockTemp = 28.5;
-int mockCurr = 850;
+#define RELAY_PIN 6
+#define NOTIFY_INTERVAL 5000
+
+// Your ESP32 board I2C pins
+#define I2C_SDA_PIN 8
+#define I2C_SCL_PIN 9
+
+Adafruit_INA219 ina219;
+bool ina219Ok = false;
 
 unsigned long lastNotifyTime = 0;
-const unsigned long notifyInterval = 5000; // Push to app every 5s
+
+float lastVoltage_V = 0.0;
+float lastCurrent_mA = 0.0;
+float lastPower_mW = 0.0;
+
+// No temperature sensor for now
+float readBatteryTemperature() {
+    return 0.0;
+}
+
+int readBatteryPercent() {
+    if (BLEManager::phoneBattery > 0) {
+        return BLEManager::phoneBattery;
+    }
+
+    // If the phone has not sent battery value yet
+    return 0;
+}
+
+void readINA219() {
+    if (!ina219Ok) {
+        lastVoltage_V = 0.0;
+        lastCurrent_mA = 0.0;
+        lastPower_mW = 0.0;
+        return;
+    }
+
+    lastVoltage_V = ina219.getBusVoltage_V();
+    lastCurrent_mA = ina219.getCurrent_mA();
+    lastPower_mW = ina219.getPower_mW();
+
+    // Remove small negative noise around zero
+    if (lastCurrent_mA < 0 && lastCurrent_mA > -2.0) {
+        lastCurrent_mA = 0.0;
+    }
+
+    if (lastPower_mW < 0 && lastPower_mW > -5.0) {
+        lastPower_mW = 0.0;
+    }
+}
 
 void setup() {
     Serial.begin(115200);
+    delay(1000);
 
-    // 1. Initialize modular components
-    RelayControl::init(RELAY_PIN);
+    Serial.println("=== ESP32 Smart Charger ===");
+
+    RelayControl::init(RELAY_PIN, true);
+    RelayControl::turnOff();
+
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+    Serial.println("Searching INA219...");
+    if (ina219.begin()) {
+        ina219Ok = true;
+        Serial.println("INA219 found.");
+    } else {
+        ina219Ok = false;
+        Serial.println("INA219 not found. Voltage/current/power will be 0.");
+    }
+
     BLEManager::init("ESP32_SMART_CHARGER");
 }
 
 void loop() {
     unsigned long now = millis();
 
-    // 1. Handle live status updates to the app
-    if (BLEManager::isConnected() && (now - lastNotifyTime >= notifyInterval)) {
-        lastNotifyTime = now;
+    int batteryPercent = readBatteryPercent();
 
-        // Mock updates for testing
-        mockTemp += 0.1;
-        if (mockBat > 1) mockBat--;
-
-        BLEManager::pushStatus(mockBat, mockTemp, mockCurr);
-        Serial.printf("Pushed Status -> Bat: %d, Temp: %.1f\n", mockBat, mockTemp);
-    }
-
-    // 2. The core charging logic
     int effectiveMin = 0;
     int effectiveMax = 100;
 
@@ -43,17 +92,60 @@ void loop() {
         effectiveMax = BLEManager::maxThreshold;
     }
 
-    // Logic:
-    // If phone battery is below min, start charging
-    // If phone battery reaches max, stop charging
-    if (BLEManager::phoneBattery > 0) {
-        if (BLEManager::phoneBattery < effectiveMin) {
+    bool chargeComplete = false;
+
+    // Hysteresis-style logic:
+    // If battery >= max -> stop charging
+    // If battery <= min -> start charging
+    // Between min and max -> keep current relay state
+    if (batteryPercent > 0) {
+        if (batteryPercent >= effectiveMax && BLEManager::savingMode) {
+            RelayControl::turnOff();
+            chargeComplete = true;
+        } else if (batteryPercent <= effectiveMin && BLEManager::savingMode) {
+            RelayControl::turnOn();
+        } else if (!BLEManager::savingMode) {
+            // Normal mode: charge until 100%
             RelayControl::turnOn();
         }
-        else if (BLEManager::phoneBattery >= effectiveMax) {
-            RelayControl::turnOff();
+    } else {
+        RelayControl::turnOn();
+    }
+
+    bool relayState = RelayControl::isOn();
+
+    readINA219();
+
+    if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
+        lastNotifyTime = now;
+
+        // For now, we send current through the old current field.
+        // UI can later be updated to display voltage and power too.
+        BLEManager::pushStatus(
+                batteryPercent,
+                lastVoltage_V,
+                (int)lastCurrent_mA,
+                lastPower_mW,
+                relayState
+        );
+
+        Serial.printf(
+                "Status -> Bat: %d%% | V: %.2f V | I: %.2f mA | P: %.2f mW | Relay: %s\n",
+                batteryPercent,
+                lastVoltage_V,
+                lastCurrent_mA,
+                lastPower_mW,
+                relayState ? "ON" : "OFF"
+        );
+
+        if (!ina219Ok) {
+            Serial.println("Warning: INA219 not available.");
+        }
+
+        if (chargeComplete) {
+            Serial.println("Charge completed: relay turned OFF.");
         }
     }
 
-    delay(10); // Small stability delay
+    delay(10);
 }

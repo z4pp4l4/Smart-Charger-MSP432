@@ -42,12 +42,23 @@ void BLEManager::init(const char* deviceName) {
     Serial.println("BLE Manager Initialized with Advertising.");
 }
 
-void BLEManager::pushStatus(int bat, float temp, int curr) {
+void BLEManager::pushStatus(int bat, float voltage, int curr, float power, bool relayOn) {
     if (_connected) {
-        char payload[32];
-        snprintf(payload, sizeof(payload), "%d:%.1f:%d", bat, temp, curr);
+        char payload[64];
+
+        // Format: battery:voltage:current:power:relay
+        snprintf(payload, sizeof(payload), "%d:%.2f:%d:%.1f:%d",
+                 bat,
+                 voltage,
+                 curr,
+                 power,
+                 relayOn ? 1 : 0);
+
         pStatusChar->setValue(payload);
         pStatusChar->notify();
+
+        Serial.print("BLE Status Sent -> ");
+        Serial.println(payload);
     }
 }
 

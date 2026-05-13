@@ -14,9 +14,8 @@
 class BLEManager {
 public:
     static void init(const char* deviceName);
-    static void pushStatus(int bat, float temp, int curr);
+    static void pushStatus(int bat, float voltage, int curr, float power, bool relayOn);
     static bool isConnected();
-
     static bool savingMode;
     static int minThreshold;
     static int maxThreshold;
