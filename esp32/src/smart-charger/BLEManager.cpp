@@ -52,7 +52,7 @@ void BLEManager::pushStatus(int bat, float voltage, int curr, float power, bool 
                  voltage,
                  curr,
                  power,
-                 relayOn ? 1 : 0);
+                 relayOn ? 0 : 1);
 
         pStatusChar->setValue(payload);
         pStatusChar->notify();

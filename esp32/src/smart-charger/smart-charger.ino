@@ -92,6 +92,7 @@ void loop() {
         effectiveMax = BLEManager::maxThreshold;
     }
 
+    bool charging_started = false;
     bool chargeComplete = false;
 
     // Hysteresis-style logic:
@@ -99,18 +100,27 @@ void loop() {
     // If battery <= min -> start charging
     // Between min and max -> keep current relay state
     if (batteryPercent > 0) {
-        if (batteryPercent >= effectiveMax && BLEManager::savingMode) {
-            RelayControl::turnOff();
-            chargeComplete = true;
-        } else if (batteryPercent <= effectiveMin && BLEManager::savingMode) {
-            RelayControl::turnOn();
-        } else if (!BLEManager::savingMode) {
-            // Normal mode: charge until 100%
+        if (BLEManager::savingMode){
+            if (batteryPercent<=effectiveMin){
+                RelayControl::turnOn();
+                charging_started=true;
+            }else if (charging_started && batteryPercent <= effectiveMax) {
+                RelayControl::turnOn();
+            }else if (charging_started && batteryPercent > effectiveMax) {
+                chargeComplete=true;
+                charging_started =false;
+                RelayControl::turnOff();
+            }else{
+                charging_started=false;
+                RelayControl::turnOff();
+            }
+        }else{
             RelayControl::turnOn();
         }
     } else {
         RelayControl::turnOn();
     }
+    
 
     bool relayState = RelayControl::isOn();
 
@@ -135,7 +145,7 @@ void loop() {
                 lastVoltage_V,
                 lastCurrent_mA,
                 lastPower_mW,
-                relayState ? "ON" : "OFF"
+                relayState ? "OFF" : "ON"
         );
 
         if (!ina219Ok) {

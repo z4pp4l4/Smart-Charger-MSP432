@@ -10,6 +10,7 @@ import 'package:fl_chart/fl_chart.dart';
 import '../../models/user_profile.dart';
 import '../../models/charging_data.dart';
 import '../../models/notifications_model.dart';
+import 'phone_page.dart';
 
 // Match the 128-bit UUIDs from ESP32
 const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
@@ -18,7 +19,8 @@ const String STATUS_CHAR_UUID = "8b11b57c-ed1a-466d-8e42-99a341f22e70";
 
 class EspPage extends StatefulWidget {
   final UserProfile profile;
-  const EspPage({super.key, required this.profile});
+  final BatteryState batteryState;
+  const EspPage({super.key, required this.profile, required this.batteryState});
 
   @override
   State<EspPage> createState() => _EspPageState();
@@ -57,13 +59,16 @@ class _EspPageState extends State<EspPage> {
   // Smart Notifications
   late NotificationDetector notificationDetector;
   final List<SmartNotification> notificationHistory = [];
-  bool _previousRelayState = false;
+  bool _previousChargingState = false;
+
+  bool get _isCharging => widget.batteryState == BatteryState.charging;
 
   @override
   void initState() {
     super.initState();
     chargingHistory = ChargingHistory();
     notificationDetector = NotificationDetector();
+    _previousChargingState = _isCharging;
     _initBattery();
     
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
@@ -79,6 +84,18 @@ class _EspPageState extends State<EspPage> {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (isConnected) _sendDataToESP32();
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant EspPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.batteryState != widget.batteryState) {
+      if (isConnected) {
+        _checkNotifications(_isCharging);
+      } else {
+        _previousChargingState = _isCharging;
+      }
+    }
   }
 
   Future<void> _initBattery() async {
@@ -105,7 +122,7 @@ class _EspPageState extends State<EspPage> {
     _dataCollectionTimer?.cancel();
     chargingHistory.clear();
     notificationHistory.clear();
-    _previousRelayState = false;
+    _previousChargingState = _isCharging;
   }
 
   Future<void> _checkAlreadyConnectedDevices() async {
@@ -182,7 +199,7 @@ class _EspPageState extends State<EspPage> {
 
       // Start collecting data for charts
       _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted && isConnected && relayOn) {
+        if (mounted && isConnected && _isCharging) {
           setState(() {
             chargingHistory.addDataPoint(voltage, current.toDouble(), power, extBatteryLevel);
           });
@@ -212,7 +229,7 @@ class _EspPageState extends State<EspPage> {
             final newRelayState = parts[4].trim() == '1';
             
             // Check for notifications
-            _checkNotifications(newRelayState);
+            _checkNotifications(_isCharging);
             
             relayOn = newRelayState;
           });
@@ -221,36 +238,36 @@ class _EspPageState extends State<EspPage> {
     });
   }
 
-  void _checkNotifications(bool currentRelayState) {
+  void _checkNotifications(bool isCharging) {
     // Check charging completion
     final chargeCompleteNotif =
-        notificationDetector.checkChargingComplete(extBatteryLevel, currentRelayState);
+        notificationDetector.checkChargingComplete(extBatteryLevel, isCharging);
     if (chargeCompleteNotif != null) {
       _addNotification(chargeCompleteNotif);
     }
 
     // Check low battery
     final lowBatteryNotif =
-        notificationDetector.checkLowBattery(extBatteryLevel, currentRelayState);
+        notificationDetector.checkLowBattery(extBatteryLevel, isCharging);
     if (lowBatteryNotif != null) {
       _addNotification(lowBatteryNotif);
     }
 
     // Check charging rate anomaly
     final anomalyNotif = notificationDetector.checkChargingRateAnomaly(
-        chargingHistory.dataPoints, currentRelayState);
+        chargingHistory.dataPoints, isCharging);
     if (anomalyNotif != null) {
       _addNotification(anomalyNotif);
     }
 
     // Check if charging just started
     final startedNotif = notificationDetector.checkChargingStarted(
-        extBatteryLevel, currentRelayState, _previousRelayState);
+        extBatteryLevel, isCharging, _previousChargingState);
     if (startedNotif != null) {
       _addNotification(startedNotif);
     }
 
-    _previousRelayState = currentRelayState;
+    _previousChargingState = isCharging;
   }
 
   void _addNotification(SmartNotification notification) {
@@ -320,126 +337,161 @@ class _EspPageState extends State<EspPage> {
   }
 
   void _showScanDialog() {
-    _startScan();
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1A1A2E),
-          title: const Text("Search for BLE Devices", style: TextStyle(color: Colors.teal)),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 400,
-            child: Column(
-              children: [
-                StreamBuilder<bool>(
-                  stream: FlutterBluePlus.isScanning,
-                  initialData: false,
-                  builder: (c, snapshot) {
-                    if (snapshot.data == true) {
-                      return const LinearProgressIndicator(color: Colors.teal);
-                    } else {
-                      return const SizedBox(height: 4);
-                    }
-                  },
-                ),
-                const SizedBox(height: 10),
-                ListTile(
-                  leading: const Icon(Icons.settings, color: Colors.teal),
-                  title: const Text("Don't see your device?", style: TextStyle(color: Colors.white, fontSize: 14)),
-                  subtitle: const Text("Open Bluetooth Settings", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
-                  onTap: () => AppSettings.openAppSettings(type: AppSettingsType.bluetooth),
-                ),
-                const Divider(color: Colors.white10),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: scanResults.length,
+  _startScan();
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: const Text("Search for BLE Devices", style: TextStyle(color: Colors.teal)),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 400,
+        child: Column(
+          children: [
+            StreamBuilder<bool>(
+              stream: FlutterBluePlus.isScanning,
+              initialData: false,
+              builder: (c, snapshot) {
+                if (snapshot.data == true) {
+                  return const LinearProgressIndicator(color: Colors.teal);
+                } else {
+                  return const SizedBox(height: 4);
+                }
+              },
+            ),
+            const SizedBox(height: 10),
+            ListTile(
+              leading: const Icon(Icons.settings, color: Colors.teal),
+              title: const Text("Don't see your device?",
+                  style: TextStyle(color: Colors.white, fontSize: 14)),
+              subtitle: const Text("Open Bluetooth Settings",
+                  style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+              onTap: () => AppSettings.openAppSettings(type: AppSettingsType.bluetooth),
+            ),
+            const Divider(color: Colors.white10),
+            Expanded(
+              child: StreamBuilder<List<ScanResult>>(
+                stream: FlutterBluePlus.scanResults,
+                initialData: const [],
+                builder: (c, snapshot) {
+                  final results = (snapshot.data ?? [])
+                      .where((r) {
+                        final name = (r.device.platformName +
+                                r.advertisementData.localName)
+                            .toLowerCase();
+                        return name.contains("esp");
+                      })
+                      .toList()
+                    ..sort((a, b) => b.rssi.compareTo(a.rssi));
+
+                  if (results.isEmpty) {
+                    return const Center(
+                      child: Text("Searching for ESP devices…",
+                          style: TextStyle(color: Colors.white54)),
+                    );
+                  }
+
+                  return ListView.builder(
+                    itemCount: results.length,
                     itemBuilder: (c, i) {
-                      final result = scanResults[i];
-                      final name = result.device.platformName.isEmpty 
-                          ? (result.advertisementData.localName.isEmpty ? "Unknown Device" : result.advertisementData.localName)
+                      final result = results[i];
+                      final name = result.device.platformName.isEmpty
+                          ? (result.advertisementData.localName.isEmpty
+                              ? "Unknown Device"
+                              : result.advertisementData.localName)
                           : result.device.platformName;
                       return ListTile(
                         leading: const Icon(Icons.bluetooth, color: Colors.teal),
-                        title: Text(name, style: const TextStyle(color: Colors.white)),
-                        subtitle: Text(result.device.remoteId.toString(), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                        title: Text(name,
+                            style: const TextStyle(color: Colors.white)),
+                        subtitle: Text(result.device.remoteId.toString(),
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 10)),
                         onTap: () {
                           _connectToDevice(result.device);
                           Navigator.pop(context);
                         },
                       );
                     },
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                FlutterBluePlus.stopScan();
-                Navigator.pop(context);
-              },
-              child: const Text("Close"),
-            ),
-            StreamBuilder<bool>(
-              stream: FlutterBluePlus.isScanning,
-              initialData: false,
-              builder: (c, snapshot) {
-                if (snapshot.data == false) {
-                  return TextButton(
-                    onPressed: () {
-                      _startScan();
-                      setDialogState(() {});
-                    },
-                    child: const Text("Rescan", style: TextStyle(color: Colors.teal)),
                   );
-                } else {
-                  return const SizedBox.shrink();
-                }
-              },
+                },
+              ),
             ),
           ],
         ),
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () {
+            FlutterBluePlus.stopScan();
+            Navigator.pop(context);
+          },
+          child: const Text("Close"),
+        ),
+        StreamBuilder<bool>(
+          stream: FlutterBluePlus.isScanning,
+          initialData: false,
+          builder: (c, snapshot) {
+            if (snapshot.data == false) {
+              return TextButton(
+                onPressed: _startScan,
+                child: const Text("Rescan", style: TextStyle(color: Colors.teal)),
+              );
+            } else {
+              return const SizedBox.shrink();
+            }
+          },
+        ),
+      ],
+    ),
+  );
+}
 
-  Future<void> _startScan() async {
-    setState(() => scanResults.clear());
-    try {
-      _scanSubscription?.cancel();
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-        if (mounted) {
-          setState(() {
-            results.sort((a, b) {
-              final aName = (a.device.platformName + a.advertisementData.localName).toLowerCase();
-              final bName = (b.device.platformName + b.advertisementData.localName).toLowerCase();
-              if (aName.contains("esp32")) return -1;
-              if (bName.contains("esp32")) return 1;
-              return b.rssi.compareTo(a.rssi);
-            });
-            scanResults = results.where((r) {
-              final name = (r.device.platformName + r.advertisementData.localName).toLowerCase();
-              return name.contains("esp32");
-            }).toList();
-          });
-        }
-      });
-
-      if (await FlutterBluePlus.isScanning.first) {
-        await FlutterBluePlus.stopScan();
-      }
-
-      await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 15),
-        androidUsesFineLocation: true,
+Future<void> _startScan() async {
+  final adapterState = await FlutterBluePlus.adapterState.first;
+  if (adapterState != BluetoothAdapterState.on) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Please turn on Bluetooth before scanning."),
+        ),
       );
-    } catch (e) {
-      debugPrint("Scan Error: $e");
     }
+    return;
   }
+
+  setState(() => scanResults.clear());
+  try {
+    _scanSubscription?.cancel();
+    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      if (mounted) {
+        setState(() {
+          scanResults = results
+              .where((r) {
+                final name = (r.device.platformName +
+                        r.advertisementData.localName)
+                    .toLowerCase();
+                return name.contains("esp");
+              })
+              .toList()
+            ..sort((a, b) => b.rssi.compareTo(a.rssi));
+        });
+      }
+    });
+
+    if (await FlutterBluePlus.isScanning.first) {
+      await FlutterBluePlus.stopScan();
+    }
+
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 15),
+      androidUsesFineLocation: true,
+    );
+  } catch (e) {
+    debugPrint("Scan Error: $e");
+  }
+}
 
   @override
   Widget build(BuildContext context) {
@@ -578,7 +630,7 @@ class _EspPageState extends State<EspPage> {
                         child: _infoCard(
                           relayOn ? Icons.power : Icons.power_off,
                           relayOn ? "Relay ON" : "Relay OFF",
-                          relayOn ? "Charging" : "Stopped",
+                          _isCharging ? "Charging" : "Stopped",
                           relayOn ? Colors.green : Colors.red,
                         ),
                       ),
@@ -746,7 +798,7 @@ class _EspPageState extends State<EspPage> {
   }
 
   Widget _buildEstimatedTimeCard() {
-    if (!relayOn || extBatteryLevel >= 100) {
+    if (!_isCharging || extBatteryLevel >= 100) {
       return _buildCard(
         child: Column(
           children: [
@@ -755,7 +807,7 @@ class _EspPageState extends State<EspPage> {
             const Text("Not Charging", style: TextStyle(color: Colors.white54)),
             const SizedBox(height: 8),
             Text(
-              extBatteryLevel >= 100 ? "Battery Full" : "Relay Off",
+              extBatteryLevel >= 100 ? "Battery Full" : "Battery Not Charging",
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
             ),
           ],
@@ -890,4 +942,3 @@ class _EspPageState extends State<EspPage> {
     }
   }
 }
-

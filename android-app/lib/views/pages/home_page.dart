@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../models/user_profile.dart';
 import '../../services/profile_service.dart';
+import 'package:battery_plus/battery_plus.dart';
 import 'profile_page.dart';
 import 'phone_page.dart';
 import 'esp_page.dart';
@@ -26,6 +27,7 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   int _selectedIndex = 0;
   late UserProfile _currentProfile;
+  BatteryState _batteryState = BatteryState.unknown;
 
   @override
   void initState() {
@@ -33,6 +35,9 @@ class _MyHomePageState extends State<MyHomePage> {
     _currentProfile = widget.profile;
   }
 
+  void _handleBatteryStateChanged(BatteryState state) {
+    setState(() => _batteryState = state);
+  }
   void _handleProfileUpdate(UserProfile updatedProfile) async {
     await ProfileService.saveProfile(widget.username, updatedProfile);
 
@@ -67,11 +72,12 @@ class _MyHomePageState extends State<MyHomePage> {
       body: IndexedStack(
         index: _selectedIndex,
         children: [
-          EspPage(profile: _currentProfile),
+          EspPage(profile: _currentProfile, batteryState: _batteryState),
           PhonePage(
             username: widget.username,
             profile: _currentProfile,
             onUpdateProfile: _handleProfileUpdate,
+            onBatteryStateChanged: _handleBatteryStateChanged,
           ),
           ProfilePage(
             username: widget.username,
