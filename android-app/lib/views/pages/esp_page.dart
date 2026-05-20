@@ -6,7 +6,10 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:fl_chart/fl_chart.dart';
 import '../../models/user_profile.dart';
+import '../../models/charging_data.dart';
+import '../../models/notifications_model.dart';
 
 // Match the 128-bit UUIDs from ESP32
 const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
@@ -47,9 +50,20 @@ class _EspPageState extends State<EspPage> {
   double power = 0.0;
   bool relayOn = false;
 
+  // Charging History & Analytics
+  late ChargingHistory chargingHistory;
+  Timer? _dataCollectionTimer;
+
+  // Smart Notifications
+  late NotificationDetector notificationDetector;
+  final List<SmartNotification> notificationHistory = [];
+  bool _previousRelayState = false;
+
   @override
   void initState() {
     super.initState();
+    chargingHistory = ChargingHistory();
+    notificationDetector = NotificationDetector();
     _initBattery();
     
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
@@ -88,6 +102,10 @@ class _EspPageState extends State<EspPage> {
       statusCharacteristic = null;
     });
     _statusSubscription?.cancel();
+    _dataCollectionTimer?.cancel();
+    chargingHistory.clear();
+    notificationHistory.clear();
+    _previousRelayState = false;
   }
 
   Future<void> _checkAlreadyConnectedDevices() async {
@@ -109,6 +127,7 @@ class _EspPageState extends State<EspPage> {
     _statusSubscription?.cancel();
     _connectedDeviceTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _dataCollectionTimer?.cancel();
     super.dispose();
   }
 
@@ -161,6 +180,15 @@ class _EspPageState extends State<EspPage> {
         connectedDevice = device;
       });
 
+      // Start collecting data for charts
+      _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (mounted && isConnected && relayOn) {
+          setState(() {
+            chargingHistory.addDataPoint(voltage, current.toDouble(), power, extBatteryLevel);
+          });
+        }
+      });
+
       _sendDataToESP32();
     } catch (e) {
       debugPrint("Conn Error: $e");
@@ -181,11 +209,91 @@ class _EspPageState extends State<EspPage> {
             voltage = double.tryParse(parts[1]) ?? voltage;
             current = int.tryParse(parts[2]) ?? current;
             power = double.tryParse(parts[3]) ?? power;
-            relayOn = parts[4].trim() == '1';
+            final newRelayState = parts[4].trim() == '1';
+            
+            // Check for notifications
+            _checkNotifications(newRelayState);
+            
+            relayOn = newRelayState;
           });
         }
       }
     });
+  }
+
+  void _checkNotifications(bool currentRelayState) {
+    // Check charging completion
+    final chargeCompleteNotif =
+        notificationDetector.checkChargingComplete(extBatteryLevel, currentRelayState);
+    if (chargeCompleteNotif != null) {
+      _addNotification(chargeCompleteNotif);
+    }
+
+    // Check low battery
+    final lowBatteryNotif =
+        notificationDetector.checkLowBattery(extBatteryLevel, currentRelayState);
+    if (lowBatteryNotif != null) {
+      _addNotification(lowBatteryNotif);
+    }
+
+    // Check charging rate anomaly
+    final anomalyNotif = notificationDetector.checkChargingRateAnomaly(
+        chargingHistory.dataPoints, currentRelayState);
+    if (anomalyNotif != null) {
+      _addNotification(anomalyNotif);
+    }
+
+    // Check if charging just started
+    final startedNotif = notificationDetector.checkChargingStarted(
+        extBatteryLevel, currentRelayState, _previousRelayState);
+    if (startedNotif != null) {
+      _addNotification(startedNotif);
+    }
+
+    _previousRelayState = currentRelayState;
+  }
+
+  void _addNotification(SmartNotification notification) {
+    notificationHistory.insert(0, notification);
+    
+    // Keep only last 10 notifications
+    if (notificationHistory.length > 10) {
+      notificationHistory.removeLast();
+    }
+
+    // Show snackbar for important notifications
+    _showNotificationSnackbar(notification);
+  }
+
+  void _showNotificationSnackbar(SmartNotification notification) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    notification.title,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    notification.message,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: notification.color.withOpacity(0.8),
+        duration: const Duration(seconds: 5),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _handleConnectPressed() async {
@@ -339,6 +447,10 @@ class _EspPageState extends State<EspPage> {
       padding: const EdgeInsets.all(20),
       child: Column(
         children: [
+          if (notificationHistory.isNotEmpty) ...[
+            _buildNotificationHistory(),
+            const SizedBox(height: 20),
+          ],
           _buildCard(
             child: Row(
               children: [
@@ -451,14 +563,33 @@ class _EspPageState extends State<EspPage> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  _infoCard(Icons.electric_bolt, "Power", "${power.toStringAsFixed(1)} mW", Colors.purple),
-                  const SizedBox(height: 12),
-                  _infoCard(
-                    relayOn ? Icons.power : Icons.power_off,
-                    relayOn ? "Relay ON" : "Relay OFF",
-                    relayOn ? "Charging" : "Stopped",
-                    relayOn ? Colors.green : Colors.red,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _infoCard(
+                          Icons.electric_bolt,
+                          "Power",
+                          "${power.toStringAsFixed(1)} mW",
+                          Colors.purple,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _infoCard(
+                          relayOn ? Icons.power : Icons.power_off,
+                          relayOn ? "Relay ON" : "Relay OFF",
+                          relayOn ? "Charging" : "Stopped",
+                          relayOn ? Colors.green : Colors.red,
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 20),
+                  _buildEstimatedTimeCard(),
+                  const SizedBox(height: 20),
+                  _buildCard(child: _buildPowerChart()),
+                  const SizedBox(height: 20),
+                  _buildCard(child: _buildCurrentChart()),
                 ],
               ),
             ),
@@ -510,4 +641,253 @@ class _EspPageState extends State<EspPage> {
       ),
     );
   }
+
+  Widget _buildPowerChart() {
+    if (chargingHistory.dataPoints.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40),
+          child: Text("No data collected yet", style: TextStyle(color: Colors.white54)),
+        ),
+      );
+    }
+
+    final dataPoints = chargingHistory.dataPoints;
+    final maxPower = dataPoints.fold(0.0, (max, p) => p.power > max ? p.power : max);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Power Over Time", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 200,
+          child: LineChart(
+            LineChartData(
+              gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: maxPower / 4),
+              titlesData: const FlTitlesData(
+                leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 40)),
+                bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              lineBarsData: [
+                LineChartBarData(
+                  spots: List.generate(
+                    dataPoints.length,
+                    (i) => FlSpot(i.toDouble(), dataPoints[i].power),
+                  ),
+                  isCurved: true,
+                  color: Colors.purple,
+                  barWidth: 3,
+                  dotData: const FlDotData(show: false),
+                )
+              ],
+              borderData: FlBorderData(show: false),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCurrentChart() {
+    if (chargingHistory.dataPoints.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final dataPoints = chargingHistory.dataPoints;
+    final maxCurrent = dataPoints.fold(0.0, (max, p) => p.current > max ? p.current : max);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Current Over Time", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 200,
+          child: LineChart(
+            LineChartData(
+              gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: (maxCurrent / 4).clamp(0, double.infinity)),
+              titlesData: const FlTitlesData(
+                leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 50)),
+                bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              lineBarsData: [
+                LineChartBarData(
+                  spots: List.generate(
+                    dataPoints.length,
+                    (i) => FlSpot(i.toDouble(), dataPoints[i].current.toDouble()),
+                  ),
+                  isCurved: true,
+                  color: Colors.blue,
+                  barWidth: 3,
+                  dotData: const FlDotData(show: false),
+                )
+              ],
+              borderData: FlBorderData(show: false),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDuration(double minutes) {
+    if (minutes < 0) return "N/A";
+    int hours = minutes.toInt() ~/ 60;
+    int mins = minutes.toInt() % 60;
+    if (hours > 0) {
+      return "$hours h ${mins}m";
+    }
+    return "${mins}m";
+  }
+
+  Widget _buildEstimatedTimeCard() {
+    if (!relayOn || extBatteryLevel >= 100) {
+      return _buildCard(
+        child: Column(
+          children: [
+            const Icon(Icons.timer, color: Colors.grey, size: 32),
+            const SizedBox(height: 12),
+            const Text("Not Charging", style: TextStyle(color: Colors.white54)),
+            const SizedBox(height: 8),
+            Text(
+              extBatteryLevel >= 100 ? "Battery Full" : "Relay Off",
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(extBatteryLevel);
+    final timeString = _formatDuration(estimatedMinutes);
+
+    return _buildCard(
+      child: Column(
+        children: [
+          const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
+          const SizedBox(height: 12),
+          const Text("Estimated Time to Full Charge", style: TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 8),
+          Text(
+            timeString,
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange),
+          ),
+          if (estimatedMinutes > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              "From ${extBatteryLevel}% → 100%",
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
+            )
+          ]
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationHistory() {
+    return _buildCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.notifications, color: Colors.amber, size: 24),
+              const SizedBox(width: 12),
+              const Text(
+                "Recent Alerts",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const Spacer(),
+              if (notificationHistory.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      notificationHistory.clear();
+                    });
+                  },
+                  child: const Text("Clear", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: notificationHistory.length,
+            separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
+            itemBuilder: (context, index) {
+              final notif = notificationHistory[index];
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: notif.color,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            notif.title,
+                            style: TextStyle(
+                              color: notif.color,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            notif.message,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _formatTime(notif.timestamp),
+                      style: const TextStyle(color: Colors.white30, fontSize: 10),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTime(DateTime dateTime) {
+    final now = DateTime.now();
+    final diff = now.difference(dateTime);
+
+    if (diff.inSeconds < 60) {
+      return "now";
+    } else if (diff.inMinutes < 60) {
+      return "${diff.inMinutes}m ago";
+    } else if (diff.inHours < 24) {
+      return "${diff.inHours}h ago";
+    } else {
+      return "${diff.inDays}d ago";
+    }
+  }
 }
+
