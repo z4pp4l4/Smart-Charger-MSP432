@@ -10,12 +10,14 @@ class PhonePage extends StatefulWidget {
   final String username;
   final UserProfile profile;
   final Function(UserProfile) onUpdateProfile;
+  final Function(BatteryState) onBatteryStateChanged;
 
   const PhonePage({
     super.key,
     required this.username,
     required this.profile,
     required this.onUpdateProfile,
+    required this.onBatteryStateChanged,
   });
 
   @override
@@ -60,7 +62,11 @@ class _PhonePageState extends State<PhonePage>
     _getDeviceInfo();
 
     _battery.onBatteryStateChanged.listen((state) {
-      if (mounted) setState(() => _batteryState = state);
+      if (mounted){ 
+        setState(() => _batteryState = state);
+        widget.onBatteryStateChanged(state);
+      };
+
     });
   }
 
@@ -103,6 +109,7 @@ class _PhonePageState extends State<PhonePage>
         setState(() {
           _batteryLevel = level;
           _batteryState = state;
+          widget.onBatteryStateChanged(state);
         });
         _fillAnimation = Tween<double>(
           begin: _fillAnimation.value,
