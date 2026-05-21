@@ -17,10 +17,12 @@
 
 ### 2. Status Characteristic (Notify/Read)
 **UUID:** `8b11b57c-ed1a-466d-8e42-99a341f22e70`
-**Format:** `extBat:temp:current`
+**Format:** `extBat:voltage:current:power:relay`
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `extBat` | Integer | External/Charger battery level (%) |
-| `temp` | Float (1 decimal) | Temperature in Celsius |
+| `voltage` | Float (2 decimals) | Bus voltage in volts |
 | `current` | Integer | Current consumption in mA |
+| `power` | Float (1 decimal) | Power consumption in mW |
+| `relay` | Integer (0 or 1) | 1 when relay is ON, 0 when relay is OFF |

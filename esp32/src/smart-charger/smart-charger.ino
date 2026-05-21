@@ -15,6 +15,7 @@ Adafruit_INA219 ina219;
 bool ina219Ok = false;
 
 unsigned long lastNotifyTime = 0;
+bool chargingStarted = false;
 
 float lastVoltage_V = 0.0;
 float lastCurrent_mA = 0.0;
@@ -92,7 +93,6 @@ void loop() {
         effectiveMax = BLEManager::maxThreshold;
     }
 
-    bool charging_started = false;
     bool chargeComplete = false;
 
     // Hysteresis-style logic:
@@ -103,21 +103,22 @@ void loop() {
         if (BLEManager::savingMode){
             if (batteryPercent<=effectiveMin){
                 RelayControl::turnOn();
-                charging_started=true;
-            }else if (charging_started && batteryPercent <= effectiveMax) {
+                chargingStarted=true;
+            }else if (chargingStarted && batteryPercent <= effectiveMax) {
                 RelayControl::turnOn();
-            }else if (charging_started && batteryPercent > effectiveMax) {
+            }else if (chargingStarted && batteryPercent > effectiveMax) {
                 chargeComplete=true;
-                charging_started =false;
+                chargingStarted =false;
                 RelayControl::turnOff();
             }else{
-                charging_started=false;
                 RelayControl::turnOff();
             }
         }else{
+            chargingStarted = true;
             RelayControl::turnOn();
         }
     } else {
+        chargingStarted = true;
         RelayControl::turnOn();
     }
     
@@ -145,7 +146,7 @@ void loop() {
                 lastVoltage_V,
                 lastCurrent_mA,
                 lastPower_mW,
-                relayState ? "OFF" : "ON"
+                relayState ? "ON" : "OFF"
         );
 
         if (!ina219Ok) {
