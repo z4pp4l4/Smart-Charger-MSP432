@@ -10,7 +10,6 @@ import 'package:fl_chart/fl_chart.dart';
 import '../../models/user_profile.dart';
 import '../../models/charging_data.dart';
 import '../../models/notifications_model.dart';
-import 'phone_page.dart';
 
 // Match the 128-bit UUIDs from ESP32
 const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
@@ -35,8 +34,10 @@ class _EspPageState extends State<EspPage> {
   StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   StreamSubscription<List<int>>? _statusSubscription;
+  StreamSubscription<BatteryState>? _batterySubscription;
   Timer? _connectedDeviceTimer;
   Timer? _heartbeatTimer;
+  bool _isConnecting = false;
   BluetoothDevice? connectedDevice;
   BluetoothCharacteristic? settingsCharacteristic;
   BluetoothCharacteristic? statusCharacteristic;
@@ -61,28 +62,26 @@ class _EspPageState extends State<EspPage> {
   final List<SmartNotification> notificationHistory = [];
   bool _previousChargingState = false;
 
-  bool get _isCharging => widget.batteryState == BatteryState.charging;
-
   @override
   void initState() {
     super.initState();
     chargingHistory = ChargingHistory();
     notificationDetector = NotificationDetector();
-    _previousChargingState = _isCharging;
+    _previousChargingState = relayOn;
     _initBattery();
-    
+
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       if (mounted && state != BluetoothAdapterState.on) {
         _cleanupConnection();
       }
     });
-    
+
     _connectedDeviceTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (!isConnected) _checkAlreadyConnectedDevices();
     });
 
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
-      if (isConnected) _sendDataToESP32();
+      if (isConnected) _sendDataToESP32(force: true);
     });
   }
 
@@ -91,44 +90,57 @@ class _EspPageState extends State<EspPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.batteryState != widget.batteryState) {
       if (isConnected) {
-        _checkNotifications(_isCharging);
+        _checkNotifications(relayOn);
       } else {
-        _previousChargingState = _isCharging;
+        _previousChargingState = relayOn;
       }
+    }
+
+    if (isConnected &&
+        (oldWidget.profile.savingMode != widget.profile.savingMode ||
+            oldWidget.profile.minThreshold != widget.profile.minThreshold ||
+            oldWidget.profile.maxThreshold != widget.profile.maxThreshold)) {
+      _sendDataToESP32(force: true);
     }
   }
 
   Future<void> _initBattery() async {
     final level = await _battery.batteryLevel;
     if (mounted) setState(() => phoneBatteryLevel = level);
-    
-    _battery.onBatteryStateChanged.listen((state) async {
-       final level = await _battery.batteryLevel;
-       if (mounted) {
-         setState(() => phoneBatteryLevel = level);
-         if (isConnected) _sendDataToESP32();
-       }
+
+    _batterySubscription = _battery.onBatteryStateChanged.listen((state) async {
+      final level = await _battery.batteryLevel;
+      if (mounted) {
+        setState(() => phoneBatteryLevel = level);
+        if (isConnected) _sendDataToESP32();
+      }
     });
   }
 
   void _cleanupConnection() {
+    if (!mounted) return;
+    _statusSubscription?.cancel();
+    _statusSubscription = null;
+    _dataCollectionTimer?.cancel();
+    _dataCollectionTimer = null;
     setState(() {
       isConnected = false;
+      _isConnecting = false;
       connectedDevice = null;
       settingsCharacteristic = null;
       statusCharacteristic = null;
+      relayOn = false;
     });
-    _statusSubscription?.cancel();
-    _dataCollectionTimer?.cancel();
     chargingHistory.clear();
     notificationHistory.clear();
-    _previousChargingState = _isCharging;
+    lastSyncPayload = null;
+    _previousChargingState = false;
   }
 
   Future<void> _checkAlreadyConnectedDevices() async {
     try {
       List<BluetoothDevice> connected = await FlutterBluePlus.connectedDevices;
-      if (connected.isNotEmpty && mounted && !isConnected) {
+      if (connected.isNotEmpty && mounted && !isConnected && !_isConnecting) {
         _connectToDevice(connected.first);
       }
     } catch (e) {
@@ -142,17 +154,21 @@ class _EspPageState extends State<EspPage> {
     _adapterStateSubscription?.cancel();
     _connectionSubscription?.cancel();
     _statusSubscription?.cancel();
+    _batterySubscription?.cancel();
     _connectedDeviceTimer?.cancel();
     _heartbeatTimer?.cancel();
     _dataCollectionTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _sendDataToESP32() async {
-    if (settingsCharacteristic == null) return;
+  Future<void> _sendDataToESP32({bool force = false}) async {
+    if (settingsCharacteristic == null || !isConnected) return;
     try {
-      String payload = "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
+      String payload =
+          "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
+      if (!force && payload == lastSyncPayload) return;
       await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
+      if (!mounted) return;
       setState(() {
         lastSyncPayload = payload;
       });
@@ -163,9 +179,15 @@ class _EspPageState extends State<EspPage> {
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
+    if (_isConnecting || isConnected) return;
+    _isConnecting = true;
     try {
       await FlutterBluePlus.stopScan();
-      await device.connect(autoConnect: false);
+      final connectionState = await device.connectionState.first;
+      if (connectionState != BluetoothConnectionState.connected) {
+        await device.connect(autoConnect: false, mtu: null);
+      }
+      if (!mounted) return;
 
       _connectionSubscription?.cancel();
       _connectionSubscription = device.connectionState.listen((state) {
@@ -174,13 +196,16 @@ class _EspPageState extends State<EspPage> {
 
       List<BluetoothService> services = await device.discoverServices();
       for (var service in services) {
-        if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
+        if (service.uuid.toString().toLowerCase() ==
+            SERVICE_UUID.toLowerCase()) {
           for (var char in service.characteristics) {
-            if (char.uuid.toString().toLowerCase() == SETTINGS_CHAR_UUID.toLowerCase()) {
+            if (char.uuid.toString().toLowerCase() ==
+                SETTINGS_CHAR_UUID.toLowerCase()) {
               settingsCharacteristic = char;
             }
 
-            if (char.uuid.toString().toLowerCase() == STATUS_CHAR_UUID.toLowerCase()) {
+            if (char.uuid.toString().toLowerCase() ==
+                STATUS_CHAR_UUID.toLowerCase()) {
               statusCharacteristic = char;
               _listenToESP(char);
             }
@@ -192,48 +217,65 @@ class _EspPageState extends State<EspPage> {
         debugPrint("ERROR: settingsCharacteristic not found");
       }
 
+      if (!mounted) return;
       setState(() {
         isConnected = true;
+        _isConnecting = false;
         connectedDevice = device;
       });
 
       // Start collecting data for charts
       _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted && isConnected && _isCharging) {
+        if (mounted && isConnected && relayOn) {
           setState(() {
-            chargingHistory.addDataPoint(voltage, current.toDouble(), power, extBatteryLevel);
+            chargingHistory.addDataPoint(
+              voltage,
+              current.toDouble(),
+              power,
+              extBatteryLevel,
+            );
           });
         }
       });
 
-      _sendDataToESP32();
+      _sendDataToESP32(force: true);
     } catch (e) {
+      _isConnecting = false;
       debugPrint("Conn Error: $e");
     }
   }
 
-
   void _listenToESP(BluetoothCharacteristic char) async {
+    await _statusSubscription?.cancel();
     await char.setNotifyValue(true);
     _statusSubscription = char.onValueReceived.listen((value) {
-      if (value.isNotEmpty) {
-        String data = utf8.decode(value);
+      if (!mounted || value.isEmpty) return;
+
+      try {
+        String data = utf8.decode(value, allowMalformed: true).trim();
         List<String> parts = data.split(':');
 
         if (parts.length >= 5) {
+          final newExtBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
+          final newVoltage = double.tryParse(parts[1]) ?? voltage;
+          final newCurrent = int.tryParse(parts[2]) ?? current;
+          final newPower = double.tryParse(parts[3]) ?? power;
+          final newRelayState = parts[4].trim() == '1';
+
           setState(() {
-            extBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
-            voltage = double.tryParse(parts[1]) ?? voltage;
-            current = int.tryParse(parts[2]) ?? current;
-            power = double.tryParse(parts[3]) ?? power;
-            final newRelayState = parts[4].trim() == '1';
-            
-            // Check for notifications
-            _checkNotifications(_isCharging);
-            
+            extBatteryLevel = newExtBatteryLevel;
+            voltage = newVoltage;
+            current = newCurrent;
+            power = newPower;
             relayOn = newRelayState;
           });
+
+          _checkNotifications(newRelayState);
+        } else {
+          debugPrint("Invalid ESP status packet: $data");
         }
+      } catch (e) {
+        debugPrint("Status Parse Error: $e");
       }
     });
   }
@@ -630,7 +672,7 @@ Future<void> _startScan() async {
                         child: _infoCard(
                           relayOn ? Icons.power : Icons.power_off,
                           relayOn ? "Relay ON" : "Relay OFF",
-                          _isCharging ? "Charging" : "Stopped",
+                          relayOn ? "Charging" : "Stopped",
                           relayOn ? Colors.green : Colors.red,
                         ),
                       ),
@@ -716,7 +758,11 @@ Future<void> _startScan() async {
           height: 200,
           child: LineChart(
             LineChartData(
-              gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: maxPower / 4),
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: maxPower > 0 ? maxPower / 4 : 1,
+              ),
               titlesData: const FlTitlesData(
                 leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 40)),
                 bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -760,7 +806,11 @@ Future<void> _startScan() async {
           height: 200,
           child: LineChart(
             LineChartData(
-              gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: (maxCurrent / 4).clamp(0, double.infinity)),
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: maxCurrent > 0 ? maxCurrent / 4 : 1,
+              ),
               titlesData: const FlTitlesData(
                 leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 50)),
                 bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -798,7 +848,7 @@ Future<void> _startScan() async {
   }
 
   Widget _buildEstimatedTimeCard() {
-    if (!_isCharging || extBatteryLevel >= 100) {
+    if (!relayOn || extBatteryLevel >= 100) {
       return _buildCard(
         child: Column(
           children: [

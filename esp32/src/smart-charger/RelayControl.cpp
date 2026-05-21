@@ -17,14 +17,14 @@ void RelayControl::init(int pin, bool activeLow) {
 
 void RelayControl::turnOn() {
     if (!_initialized) return;
-    _isOn = false;
+    _isOn = true;
     updateOutput();
 //Serial.println("Hardware: Relay ON");
 }
 
 void RelayControl::turnOff() {
     if (!_initialized) return;
-    _isOn = true;
+    _isOn = false;
     updateOutput();
 //  Serial.println("Hardware: Relay OFF");
 }
@@ -35,6 +35,8 @@ bool RelayControl::isOn() {
 
 void RelayControl::updateOutput() {
     if (!_initialized) return;
-    int output = _isOn;
+    int output = _activeLow
+        ? (_isOn ? LOW : HIGH)
+        : (_isOn ? HIGH : LOW);
     digitalWrite(_pin, output);
 }
