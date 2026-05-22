@@ -62,7 +62,7 @@ class _MyHomePageState extends State<MyHomePage> {
       appBar: AppBar(title: const Text('My Battery App'), centerTitle: true),
       bottomNavigationBar: NavigationBar(
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.battery_0_bar_rounded), label: 'MSP Battery'),
+          NavigationDestination(icon: Icon(Icons.battery_0_bar_rounded), label: 'ESP32'),
           NavigationDestination(icon: Icon(Icons.phone_android), label: 'Phone'),
           NavigationDestination(icon: Icon(Icons.person), label: 'Profile'),
         ],
