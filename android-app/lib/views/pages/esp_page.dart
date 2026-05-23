@@ -665,6 +665,7 @@ Future<void> _startScan() async {
                   ignoring: !isConnected,
                   child: Column(
                     children: [
+                      /*
                       _buildCard(
                         child: Column(
                           children: [
@@ -679,7 +680,7 @@ Future<void> _startScan() async {
                             )
                           ],
                         ),
-                      ),
+                      ), */
                       const SizedBox(height: 20),
                       Row(
                         children: [
@@ -699,6 +700,7 @@ Future<void> _startScan() async {
                               Colors.purple,
                             ),
                           ),
+                          /*
                           const SizedBox(width: 12),
                           Expanded(
                             child: _infoCard(
@@ -708,6 +710,7 @@ Future<void> _startScan() async {
                               relayOn ? Colors.green : Colors.red,
                             ),
                           ),
+                          */
                         ],
                       ),
                       const SizedBox(height: 20),
@@ -921,7 +924,7 @@ Future<void> _startScan() async {
           if (estimatedMinutes > 0) ...[
             const SizedBox(height: 8),
             Text(
-              "From ${extBatteryLevel}% → 100%",
+              "From ${extBatteryLevel}% → ${widget.profile.savingMode ? widget.profile.maxThreshold : 100}%",
               style: const TextStyle(color: Colors.white54, fontSize: 11),
             )
           ]
