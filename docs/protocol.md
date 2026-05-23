@@ -17,7 +17,7 @@
 
 ### 2. Status Characteristic (Notify/Read)
 **UUID:** `8b11b57c-ed1a-466d-8e42-99a341f22e70`
-**Format:** `extBat:voltage:current:power:relay`
+**Format:** `voltage:current:power:relay`
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
