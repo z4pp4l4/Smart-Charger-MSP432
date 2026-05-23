@@ -12,7 +12,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
-        android:label="first_tuto"
+        android:label="Smart Charger"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -74,7 +74,10 @@ void BLEManager::ServerCallbacks::onConnect(BLEServer* pServer) {
 void BLEManager::ServerCallbacks::onDisconnect(BLEServer* pServer) {
     _connected = false;
     Serial.println("BLE: Disconnected");
+    delay (500);
     BLEDevice::startAdvertising();
+    Serial.println("BLE: Advertising restarted");
+
 }
 
 void BLEManager::SettingsCallbacks::onWrite(BLECharacteristic *pCharacteristic) {

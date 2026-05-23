@@ -59,15 +59,13 @@ class _EspPageState extends State<EspPage> {
 
   // Smart Notifications
   late NotificationDetector notificationDetector;
-  final List<SmartNotification> notificationHistory = [];
-  bool _previousChargingState = false;
+  bool? _previousRelayState; // Null means unknown/initial state
 
   @override
   void initState() {
     super.initState();
     chargingHistory = ChargingHistory();
     notificationDetector = NotificationDetector();
-    _previousChargingState = relayOn;
     _initBattery();
 
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
@@ -91,8 +89,6 @@ class _EspPageState extends State<EspPage> {
     if (oldWidget.batteryState != widget.batteryState) {
       if (isConnected) {
         _checkNotifications(relayOn);
-      } else {
-        _previousChargingState = relayOn;
       }
     }
 
@@ -130,11 +126,10 @@ class _EspPageState extends State<EspPage> {
       settingsCharacteristic = null;
       statusCharacteristic = null;
       relayOn = false;
+      _previousRelayState = null;
     });
     chargingHistory.clear();
-    notificationHistory.clear();
     lastSyncPayload = null;
-    _previousChargingState = false;
   }
 
   Future<void> _checkAlreadyConnectedDevices() async {
@@ -304,23 +299,16 @@ class _EspPageState extends State<EspPage> {
 
     // Check if charging just started
     final startedNotif = notificationDetector.checkChargingStarted(
-        extBatteryLevel, isCharging, _previousChargingState);
+        extBatteryLevel, isCharging, _previousRelayState);
     if (startedNotif != null) {
       _addNotification(startedNotif);
     }
 
-    _previousChargingState = isCharging;
+    _previousRelayState = isCharging;
   }
 
   void _addNotification(SmartNotification notification) {
-    notificationHistory.insert(0, notification);
-    
-    // Keep only last 10 notifications
-    if (notificationHistory.length > 10) {
-      notificationHistory.removeLast();
-    }
-
-    // Show snackbar for important notifications
+    NotificationManager().addNotification(notification);
     _showNotificationSnackbar(notification);
   }
 
@@ -391,6 +379,52 @@ class _EspPageState extends State<EspPage> {
         height: 400,
         child: Column(
           children: [
+            // Bluetooth Status Banner (High Visibility - First Ground)
+            StreamBuilder<BluetoothAdapterState>(
+              stream: FlutterBluePlus.adapterState,
+              initialData: BluetoothAdapterState.unknown,
+              builder: (c, snapshot) {
+                if (snapshot.data != BluetoothAdapterState.on) {
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent,
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        )
+                      ],
+                    ),
+                    child: const Row(
+                      children: [
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12),
+                          child: Icon(Icons.bluetooth_disabled, color: Colors.white, size: 24),
+                        ),
+                        Expanded(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Text(
+                              "Bluetooth is OFF. Please turn it on to scan.",
+                              style: TextStyle(
+                                color: Colors.white, 
+                                fontSize: 14, 
+                                fontWeight: FontWeight.bold
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
             StreamBuilder<bool>(
               stream: FlutterBluePlus.isScanning,
               initialData: false,
@@ -493,13 +527,7 @@ class _EspPageState extends State<EspPage> {
 Future<void> _startScan() async {
   final adapterState = await FlutterBluePlus.adapterState.first;
   if (adapterState != BluetoothAdapterState.on) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Please turn on Bluetooth before scanning."),
-        ),
-      );
-    }
+    // Bluetooth check is now handled visually in the dialog banner
     return;
   }
 
@@ -537,159 +565,168 @@ Future<void> _startScan() async {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          if (notificationHistory.isNotEmpty) ...[
-            _buildNotificationHistory(),
-            const SizedBox(height: 20),
-          ],
-          _buildCard(
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: isConnected ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                    color: isConnected ? Colors.green : Colors.red,
-                    size: 28,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("ESP32 Connection", style: TextStyle(color: Colors.white54, fontSize: 12)),
-                      Text(
-                        isConnected ? (connectedDevice?.platformName.isNotEmpty == true
-                            ? connectedDevice!.platformName
-                            : "ESP32 Device") : "Disconnected",
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+    return ListenableBuilder(
+      listenable: NotificationManager(),
+      builder: (context, _) {
+        final history = NotificationManager().history;
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              if (history.isNotEmpty) ...[
+                _buildNotificationHistory(history),
+                const SizedBox(height: 20),
+              ],
+              _buildCard(
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isConnected ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                        shape: BoxShape.circle,
                       ),
-                    ],
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: isConnected ? () => connectedDevice?.disconnect() : _handleConnectPressed,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isConnected ? Colors.red.withOpacity(0.2) : Colors.teal,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: Text(isConnected ? "Disconnect" : "Connect"),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          
-          // --- App -> ESP32 Data ---
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.sync, color: Colors.teal, size: 20),
-                    SizedBox(width: 8),
-                    Text("Phone -> ESP32 Sync", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
+                      child: Icon(
+                        isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                        color: isConnected ? Colors.green : Colors.red,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("ESP32 Connection", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          Text(
+                            isConnected ? (connectedDevice?.platformName.isNotEmpty == true
+                                ? connectedDevice!.platformName
+                                : "ESP32 Device") : "Disconnected",
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton(
+                      onPressed: isConnected ? () => connectedDevice?.disconnect() : _handleConnectPressed,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isConnected ? Colors.red.withOpacity(0.2) : Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: Text(isConnected ? "Disconnect" : "Connect"),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 15),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              ),
+              const SizedBox(height: 20),
+              
+              // --- App -> ESP32 Data ---
+              _buildCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _syncItem("Saving Mode", widget.profile.savingMode ? "ON" : "OFF", widget.profile.savingMode ? Colors.orange : Colors.white54),
-                    _syncItem("Phone Battery", "$phoneBatteryLevel%", Colors.green),
-                  ],
-                ),
-                const SizedBox(height: 15),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _syncItem("Min Threshold", widget.profile.savingMode ? "${widget.profile.minThreshold}%" : "0%", Colors.white),
-                    _syncItem("Max Threshold", widget.profile.savingMode ? "${widget.profile.maxThreshold}%" : "100%", Colors.white),
-                  ],
-                ),
-                if (lastSyncPayload != null) ...[
-                  const Divider(color: Colors.white10, height: 20),
-                  Text("Last Payload: $lastSyncPayload", style: const TextStyle(color: Colors.white24, fontSize: 10, fontFamily: 'monospace')),
-                ]
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          AnimatedOpacity(
-            opacity: isConnected ? 1.0 : 0.35,
-            duration: const Duration(milliseconds: 300),
-            child: IgnorePointer(
-              ignoring: !isConnected,
-              child: Column(
-                children: [
-                  _buildCard(
-                    child: Column(
+                    const Row(
                       children: [
-                        const Text("ESP32 External Battery", style: TextStyle(color: Colors.white54)),
-                        const SizedBox(height: 10),
-                        Text("$extBatteryLevel%", style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.teal)),
-                        const SizedBox(height: 10),
-                        LinearProgressIndicator(
-                          value: extBatteryLevel / 100,
-                          backgroundColor: Colors.white12,
-                          color: Colors.teal,
-                        )
+                        Icon(Icons.sync, color: Colors.teal, size: 20),
+                        SizedBox(width: 8),
+                        Text("Phone -> ESP32 Sync", style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold)),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
-                      const SizedBox(width: 12),
-                      Expanded(child: _infoCard(Icons.bolt, "Voltage", "${voltage.toStringAsFixed(2)} V", Colors.orange)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _infoCard(
-                          Icons.electric_bolt,
-                          "Power",
-                          "${power.toStringAsFixed(1)} mW",
-                          Colors.purple,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _infoCard(
-                          relayOn ? Icons.power : Icons.power_off,
-                          relayOn ? "Relay ON" : "Relay OFF",
-                          relayOn ? "Charging" : "Stopped",
-                          relayOn ? Colors.green : Colors.red,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  _buildEstimatedTimeCard(),
-                  const SizedBox(height: 20),
-                  _buildCard(child: _buildPowerChart()),
-                  const SizedBox(height: 20),
-                  _buildCard(child: _buildCurrentChart()),
-                ],
+                    const SizedBox(height: 15),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _syncItem("Saving Mode", widget.profile.savingMode ? "ON" : "OFF", widget.profile.savingMode ? Colors.orange : Colors.white54),
+                        _syncItem("Phone Battery", "$phoneBatteryLevel%", Colors.green),
+                      ],
+                    ),
+                    const SizedBox(height: 15),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _syncItem("Min Threshold", widget.profile.savingMode ? "${widget.profile.minThreshold}%" : "0%", Colors.white),
+                        _syncItem("Max Threshold", widget.profile.savingMode ? "${widget.profile.maxThreshold}%" : "100%", Colors.white),
+                      ],
+                    ),
+                    if (lastSyncPayload != null) ...[
+                      const Divider(color: Colors.white10, height: 20),
+                      Text("Last Payload: $lastSyncPayload", style: const TextStyle(color: Colors.white24, fontSize: 10, fontFamily: 'monospace')),
+                    ]
+                  ],
+                ),
               ),
-            ),
+              const SizedBox(height: 20),
+
+              AnimatedOpacity(
+                opacity: isConnected ? 1.0 : 0.35,
+                duration: const Duration(milliseconds: 300),
+                child: IgnorePointer(
+                  ignoring: !isConnected,
+                  child: Column(
+                    children: [
+                      /*
+                      _buildCard(
+                        child: Column(
+                          children: [
+                            const Text("ESP32 External Battery", style: TextStyle(color: Colors.white54)),
+                            const SizedBox(height: 10),
+                            Text("$extBatteryLevel%", style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.teal)),
+                            const SizedBox(height: 10),
+                            LinearProgressIndicator(
+                              value: extBatteryLevel / 100,
+                              backgroundColor: Colors.white12,
+                              color: Colors.teal,
+                            )
+                          ],
+                        ),
+                      ), */
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
+                          const SizedBox(width: 12),
+                          Expanded(child: _infoCard(Icons.bolt, "Voltage", "${voltage.toStringAsFixed(2)} V", Colors.orange)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _infoCard(
+                              Icons.electric_bolt,
+                              "Power",
+                              "${power.toStringAsFixed(1)} mW",
+                              Colors.purple,
+                            ),
+                          ),
+                          /*
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _infoCard(
+                              relayOn ? Icons.power : Icons.power_off,
+                              relayOn ? "Relay ON" : "Relay OFF",
+                              relayOn ? "Charging" : "Stopped",
+                              relayOn ? Colors.green : Colors.red,
+                            ),
+                          ),
+                          */
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      _buildEstimatedTimeCard(),
+                      const SizedBox(height: 20),
+                      _buildCard(child: _buildPowerChart()),
+                      const SizedBox(height: 20),
+                      _buildCard(child: _buildCurrentChart()),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      }
     );
   }
 
@@ -838,12 +875,17 @@ Future<void> _startScan() async {
   }
 
   String _formatDuration(double minutes) {
-    if (minutes < 0) return "N/A";
-    int hours = minutes.toInt() ~/ 60;
-    int mins = minutes.toInt() % 60;
+    if (!minutes.isFinite || minutes.isNaN || minutes < 0) return "N/A";
+
+    final safeMinutes = minutes;
+
+    int hours = safeMinutes.toInt() ~/ 60;
+    int mins = safeMinutes.toInt() % 60;
+
     if (hours > 0) {
       return "$hours h ${mins}m";
     }
+
     return "${mins}m";
   }
 
@@ -882,7 +924,7 @@ Future<void> _startScan() async {
           if (estimatedMinutes > 0) ...[
             const SizedBox(height: 8),
             Text(
-              "From ${extBatteryLevel}% → 100%",
+              "From ${extBatteryLevel}% → ${widget.profile.savingMode ? widget.profile.maxThreshold : 100}%",
               style: const TextStyle(color: Colors.white54, fontSize: 11),
             )
           ]
@@ -891,7 +933,10 @@ Future<void> _startScan() async {
     );
   }
 
-  Widget _buildNotificationHistory() {
+  Widget _buildNotificationHistory(List<SmartNotification> history) {
+    // Show only the 3 most recent notifications in the small card
+    final recentHistory = history.take(3).toList();
+
     return _buildCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -905,25 +950,20 @@ Future<void> _startScan() async {
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
               ),
               const Spacer(),
-              if (notificationHistory.isNotEmpty)
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      notificationHistory.clear();
-                    });
-                  },
-                  child: const Text("Clear", style: TextStyle(color: Colors.white54, fontSize: 12)),
-                ),
+              TextButton(
+                onPressed: () => NotificationManager().clearHistory(),
+                child: const Text("Clear", style: TextStyle(color: Colors.white54, fontSize: 12)),
+              ),
             ],
           ),
           const SizedBox(height: 12),
           ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: notificationHistory.length,
+            itemCount: recentHistory.length,
             separatorBuilder: (_, __) => const Divider(color: Colors.white10, height: 1),
             itemBuilder: (context, index) {
-              final notif = notificationHistory[index];
+              final notif = recentHistory[index];
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(

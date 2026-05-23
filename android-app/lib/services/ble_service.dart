@@ -61,14 +61,16 @@ class BleService {
       String data = utf8.decode(value);
       List<String> parts = data.split(':');
       if (parts.length >= 3) {
-        final status = {
+        final Map<String, dynamic> status = {
           'battery': int.tryParse(parts[0]) ?? 0,
           'temp': double.tryParse(parts[1]) ?? 0.0,
           'current': int.tryParse(parts[2]) ?? 0,
         };
+
         if (parts.length >= 4) {
           status['relayOn'] = parts[3].trim() == '1';
         }
+
         _statusController.add(status);
       }
     });
