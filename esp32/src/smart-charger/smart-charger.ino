@@ -188,10 +188,10 @@ void loop() {
 
     if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
         lastNotifyTime = now;
-        BLEManager::pushStatus(batteryPercent, lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::chargingAllowed);
+        BLEManager::pushStatus(lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::chargingAllowed);
 
-        Serial.printf("Bat: %d%% | V: %.2fV | I: %.1fmA | Relay: %s\n",
-                      batteryPercent, lastVoltage_V, lastCurrent_mA, RelayControl::chargingAllowed ? "Charging" : "Not Charging");
+        Serial.printf(" V: %.2fV | I: %.1fmA | Relay: %s\n",
+                       lastVoltage_V, lastCurrent_mA, RelayControl::chargingAllowed ? "Charging" : "Not Charging");
     }
 
     delay(20);
