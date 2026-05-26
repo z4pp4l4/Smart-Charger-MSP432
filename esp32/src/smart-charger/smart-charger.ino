@@ -16,7 +16,6 @@ Adafruit_INA219 ina219;
 bool ina219Ok = false;
 
 unsigned long lastNotifyTime = 0;
-bool chargingStarted = false;
 
 float lastVoltage_V = 0.0;
 float lastCurrent_mA = 0.0;
@@ -60,8 +59,29 @@ void setup() {
     }
     Serial.println("\n=== ESP32 Smart Charger Booting ===");
 
-    RelayControl::init(RELAY_PIN, true);
-    RelayControl::turnOff();
+    RelayControl::init(RELAY_PIN, true); //active low relay
+
+    //RelayControl::startCharging(); this call writes unnecessary pins sometimes
+
+    if (!BLEManager::savingMode) {
+        RelayControl::startCharging();
+    } else {
+        int bat = readBatteryPercent();
+        if (bat >= BLEManager::maxThreshold) {
+            RelayControl::stopCharging();
+        } else {
+            RelayControl::startCharging(); // covers bat < min and min <= bat < max
+        }
+    }
+
+    /*
+     IMPORTANT  : we should inspect the battery level lecture appena lanciamo l'app
+     se vediamo che legge 0%, mettiamo RelayControl::startCharging(); al posto del blocco soppra
+     cosi prende il suo tempo senza clicks non necessari, e una volta il programma loaded, il Ble connected
+     facciamo partire la ricarica dentro loop
+     il sistema aspetta con calma che il tutto si stabili
+
+      */
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     delay(500);
@@ -95,36 +115,83 @@ void loop() {
     int effectiveMin = BLEManager::savingMode ? BLEManager::minThreshold : 0;
     int effectiveMax = BLEManager::savingMode ? BLEManager::maxThreshold : 100;
 
+    if (now - RelayControl::lastControlTime >= NOTIFY_INTERVAL) {
+        RelayControl::lastControlTime = now;
+
+        if (!BLEManager::savingMode) {
+            // normal charging till 100
+            if (batteryPercent < 100) {
+                if (!RelayControl::chargingAllowed) {
+                    //if its not chargig, start charging,
+                    RelayControl::startCharging();
+                } //else do nothing since its already charging
+
+            } else {
+                //we hit 100 and its still charging, stop charging
+                if (RelayControl::chargingAllowed) {
+                    RelayControl::stopCharging();
+                }
+            }
+
+
+        } else {
+            /* 4 possible cases:
+             chargin + bat<maxT (includes bat<minT) ==> else (keep charging)
+             charging + bat >maxT  ==> first if (stop charging)
+             not charging + bat<minT (includes bat<maxT) ==> else if (start charging)
+             not charging + bat>minT  ==> else (keep not charging)
+             */
+
+            if (RelayControl::chargingAllowed && batteryPercent >= effectiveMax) {
+                RelayControl::stopCharging();
+            }
+            else if (!RelayControl::chargingAllowed && batteryPercent <= effectiveMin) {
+                RelayControl::startCharging();
+            }
+            else {
+                //here we have the cases: charging + bat < maxT & not charging + bat > minT
+                // cioè il caso tra minT e maxT
+                // keep the state, do not toggle
+            }
+        }
+    }
+
+    /*
     bool chargeComplete = false;
+    bool is_charging = false;
 
     if (batteryPercent > -1) {
         if (BLEManager::savingMode){
+            //bat<minT
             if (batteryPercent <= effectiveMin){
                 RelayControl::turnOn();
-                chargingStarted = true;
-            } else if (chargingStarted && batteryPercent > effectiveMax) {
+                is_charging= true;
+            //charging with bat>maxT
+            } else if (is_charging && batteryPercent >= effectiveMax) {
                 chargeComplete = true;
-                chargingStarted = false;
+                is_charging= false;
                 RelayControl::turnOff();
             }
+
         } else {
-            chargingStarted = true;
+            is_charging= true;
             RelayControl::turnOn();
         }
     } else {
         // Default to ON if no battery data yet, or keep state
         RelayControl::turnOn();
-        chargingStarted = true;
+        is_charging= true;
     }
+     */
 
     readINA219();
 
     if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
         lastNotifyTime = now;
-        BLEManager::pushStatus(lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::isOn());
+        BLEManager::pushStatus(lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::chargingAllowed);
 
-        Serial.printf("V: %.2fV | I: %.1fmA | Relay: %s\n",
-                      lastVoltage_V, lastCurrent_mA, RelayControl::isOn() ? "ON" : "OFF");
+        Serial.printf(" V: %.2fV | I: %.1fmA | Relay: %s\n",
+                       lastVoltage_V, lastCurrent_mA, RelayControl::chargingAllowed ? "Charging" : "Not Charging");
     }
 
     delay(20);
