@@ -49,7 +49,7 @@ class _EspPageState extends State<EspPage> {
   // ESP32 Data (Live)
   int extBatteryLevel = 0;
   double voltage = 0.0;
-  int current = 0;
+  double current = 0.0;
   double power = 0.0;
   bool relayOn = false;
 
@@ -225,7 +225,7 @@ class _EspPageState extends State<EspPage> {
           setState(() {
             chargingHistory.addDataPoint(
               voltage,
-              current.toDouble(),
+              current,
               power,
               extBatteryLevel,
             );
@@ -253,7 +253,7 @@ class _EspPageState extends State<EspPage> {
         if (parts.length >= 5) {
           final newExtBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
           final newVoltage = double.tryParse(parts[1]) ?? voltage;
-          final newCurrent = int.tryParse(parts[2]) ?? current;
+          final newCurrent = double.tryParse(parts[2]) ?? current;
           final newPower = double.tryParse(parts[3]) ?? power;
           final newRelayState = parts[4].trim() == '1';
 
@@ -684,7 +684,7 @@ Future<void> _startScan() async {
                       const SizedBox(height: 20),
                       Row(
                         children: [
-                          Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
+                          Expanded(child: _infoCard(Icons.flash_on, "Current","${current.toStringAsFixed(1)} mA", Colors.blue)),
                           const SizedBox(width: 12),
                           Expanded(child: _infoCard(Icons.bolt, "Voltage", "${voltage.toStringAsFixed(2)} V", Colors.orange)),
                         ],
@@ -858,7 +858,7 @@ Future<void> _startScan() async {
                 LineChartBarData(
                   spots: List.generate(
                     dataPoints.length,
-                    (i) => FlSpot(i.toDouble(), dataPoints[i].current.toDouble()),
+                    (i) => FlSpot(i.toDouble(), dataPoints[i].current),
                   ),
                   isCurved: true,
                   color: Colors.blue,

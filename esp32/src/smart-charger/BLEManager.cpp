@@ -28,6 +28,7 @@ void BLEManager::init(const char* deviceName) {
                       BLECharacteristic::PROPERTY_READ |
                       BLECharacteristic::PROPERTY_NOTIFY
                   );
+    pStatusChar->addDescriptor(new BLE2902());
 
     pService->start();
 
@@ -46,7 +47,7 @@ void BLEManager::pushStatus (int bat, float voltage, int curr, float power, bool
     if (_connected) {
         char payload[64];
 
-        // Format: voltage:current:power:relay
+        // Format: battery:voltage:current:power:relay
         snprintf(payload, sizeof(payload), "%d:%.2f:%d:%.1f:%d",
                  bat,
                  voltage,
