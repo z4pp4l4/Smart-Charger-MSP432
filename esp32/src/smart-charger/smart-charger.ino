@@ -119,12 +119,12 @@ void loop() {
 
     readINA219();
 
-    if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
+      if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
         lastNotifyTime = now;
-        BLEManager::pushStatus(lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::isOn());
+        BLEManager::pushStatus(batteryPercent, lastVoltage_V, (int)lastCurrent_mA, lastPower_mW, RelayControl::isOn());
 
-        Serial.printf("V: %.2fV | I: %.1fmA | Relay: %s\n",
-                      lastVoltage_V, lastCurrent_mA, RelayControl::isOn() ? "ON" : "OFF");
+        Serial.printf("Bat: %d%% | V: %.2fV | I: %.1fmA | Relay: %s\n",
+                      batteryPercent, lastVoltage_V, lastCurrent_mA, RelayControl::isOn() ? "ON" : "OFF");
     }
 
     delay(20);
