@@ -60,6 +60,8 @@ class _EspPageState extends State<EspPage> {
   // Smart Notifications
   late NotificationDetector notificationDetector;
   bool? _previousRelayState; // Null means unknown/initial state
+  bool _wasCharging = false;   // ← add, current-based charging tracker
+
 
   @override
   void initState() {
@@ -227,7 +229,7 @@ class _EspPageState extends State<EspPage> {
 
       // Start collecting data for charts
       _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted && isConnected && relayOn) {
+        if (mounted && isConnected && current > 5) {
           setState(() {
             chargingHistory.addDataPoint(
               voltage,
@@ -310,9 +312,10 @@ class _EspPageState extends State<EspPage> {
       _addNotification(startedNotif);
     }
 
-    // 🎯 Target Reached — relay just turned OFF at/near max in saving mode
-    if (_previousRelayState == true &&
-        !isCharging &&
+    // 🎯 Target Reached — current just stopped flowing at/near max in saving mode
+    final bool chargingNow = current > 5; // mA, same threshold as the card
+    if (_wasCharging &&
+        !chargingNow &&
         widget.profile.savingMode &&
         extBatteryLevel >= widget.profile.maxThreshold - 2) {
       _addNotification(SmartNotification(
@@ -322,6 +325,7 @@ class _EspPageState extends State<EspPage> {
         color: Colors.teal,
       ));
     }
+    _wasCharging = chargingNow;
 
     _previousRelayState = isCharging;
   }

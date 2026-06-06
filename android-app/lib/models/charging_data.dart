@@ -48,18 +48,25 @@ class ChargingHistory {
   /// reported battery level over the recorded window.
   /// Positive while charging, negative while discharging, 0 if unknown.
   double getAverageChargingRate() {
-    if (dataPoints.length < 2) return 0;
+    if (dataPoints.isEmpty) return 0;
 
-    final first = dataPoints.first;
-    final last = dataPoints.last;
+    // Only points where the battery % was actually reported (skip 0 / stale).
+    final valid = dataPoints.where((p) => p.batteryPercent > 0).toList();
+    if (valid.length < 2) return 0;
+
+    // Trailing window (last ~5 min) so an old reading can't skew the slope.
+    final cutoff = valid.last.timestamp.subtract(const Duration(minutes: 5));
+    final window = valid.where((p) => p.timestamp.isAfter(cutoff)).toList();
+    if (window.length < 2) return 0;
+
+    final first = window.first;
+    final last = window.last;
 
     final seconds = last.timestamp.difference(first.timestamp).inSeconds;
     if (seconds <= 0) return 0;
 
     final percentDiff = (last.batteryPercent - first.batteryPercent).toDouble();
-    final minutes = seconds / 60.0;
-
-    return percentDiff / minutes; // % per minute
+    return percentDiff / (seconds / 60.0); // % per minute
   }
 
   /// Estimated minutes until the battery reaches [targetBattery].
