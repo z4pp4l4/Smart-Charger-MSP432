@@ -17,79 +17,68 @@ class ChargingDataPoint {
 class ChargingHistory {
   final List<ChargingDataPoint> dataPoints = [];
 
-  // Keep ~10 minutes of history at 5s intervals.
   static const int maxDataPoints = 120;
-
-  // Don't estimate until we have enough data for a stable result.
   static const int _minPoints = 5;
   static const int _minSpanSeconds = 60;
 
-  void addDataPoint(double voltage, double current, double power, int batteryPercent) {
-    dataPoints.add(
-      ChargingDataPoint(
-        timestamp: DateTime.now(),
-        voltage: voltage,
-        current: current,
-        power: power,
-        batteryPercent: batteryPercent,
-      ),
-    );
+  // Smoothed charging rate (%/min) so the ETA doesn't jump around.
+  double _smoothedRate = 0;
+  static const double _smoothing = 0.2; // lower = smoother/slower to react
 
+  void addDataPoint(double voltage, double current, double power, int batteryPercent) {
+    dataPoints.add(ChargingDataPoint(
+      timestamp: DateTime.now(),
+      voltage: voltage,
+      current: current,
+      power: power,
+      batteryPercent: batteryPercent,
+    ));
     if (dataPoints.length > maxDataPoints) {
       dataPoints.removeAt(0);
     }
+    _updateRate();
   }
 
   void clear() {
     dataPoints.clear();
+    _smoothedRate = 0;
   }
 
-  /// Average charging rate in percent-per-minute, taken from the phone's
-  /// reported battery level over the recorded window.
-  /// Positive while charging, negative while discharging, 0 if unknown.
-  double getAverageChargingRate() {
-    if (dataPoints.isEmpty) return 0;
-
-    // Only points where the battery % was actually reported (skip 0 / stale).
+  // Recomputed each time a point is added (~5s), then exponentially smoothed.
+  void _updateRate() {
     final valid = dataPoints.where((p) => p.batteryPercent > 0).toList();
-    if (valid.length < 2) return 0;
+    if (valid.length < 2) return;
 
-    // Trailing window (last ~5 min) so an old reading can't skew the slope.
     final cutoff = valid.last.timestamp.subtract(const Duration(minutes: 5));
     final window = valid.where((p) => p.timestamp.isAfter(cutoff)).toList();
-    if (window.length < 2) return 0;
+    if (window.length < 2) return;
 
     final first = window.first;
     final last = window.last;
-
     final seconds = last.timestamp.difference(first.timestamp).inSeconds;
-    if (seconds <= 0) return 0;
+    if (seconds <= 0) return;
 
-    final percentDiff = (last.batteryPercent - first.batteryPercent).toDouble();
-    return percentDiff / (seconds / 60.0); // % per minute
+    final raw = (last.batteryPercent - first.batteryPercent).toDouble() / (seconds / 60.0);
+    if (raw <= 0) return; // % hasn't moved -> keep the last good rate, don't inflate
+
+    _smoothedRate =
+    _smoothedRate == 0 ? raw : (_smoothedRate * (1 - _smoothing) + raw * _smoothing);
   }
 
-  /// Estimated minutes until the battery reaches [targetBattery].
-  /// In saving mode, pass the max threshold as [targetBattery]; otherwise 100.
-  ///
-  /// Returns:
-  ///    0  -> already at or past the target
-  ///   -1  -> can't estimate yet (not enough data, or not charging)
-  ///   >0  -> estimated minutes remaining
+  double getAverageChargingRate() => _smoothedRate;
+
   double calculateEstimatedTimeToCharge(int currentBattery, {int targetBattery = 100}) {
     if (currentBattery >= targetBattery) return 0;
-
     if (dataPoints.length < _minPoints) return -1;
 
-    final spanSeconds = dataPoints.last.timestamp
-        .difference(dataPoints.first.timestamp)
-        .inSeconds;
+    final spanSeconds =
+        dataPoints.last.timestamp.difference(dataPoints.first.timestamp).inSeconds;
     if (spanSeconds < _minSpanSeconds) return -1;
 
-    final rate = getAverageChargingRate(); // % per minute
-    if (rate <= 0) return -1;              // not charging, or % hasn't moved yet
+    final rate = getAverageChargingRate();
+    if (rate <= 0) return -1;
 
     final remainingPercent = targetBattery - currentBattery;
-    return remainingPercent / rate;        // minutes
+    return remainingPercent / rate;
   }
 }
