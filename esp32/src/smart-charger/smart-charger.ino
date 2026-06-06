@@ -17,6 +17,9 @@ bool ina219Ok = false;
 unsigned long lastNotifyTime = 0;
 bool chargingStarted = false;
 
+bool cappedAtMax = false;   // true once we've hit max and are waiting for min
+int  lastMaxSeen   = -1;    // to detect when the user raises the cap
+
 float lastVoltage_V = 0.0;
 float lastCurrent_mA = 0.0;
 float lastPower_mW = 0.0;
@@ -82,39 +85,52 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
-
+    
     int batteryPercent = readBatteryPercent();
 
     int effectiveMin = 0;
     int effectiveMax = 100;
-
     if (BLEManager::savingMode) {
         effectiveMin = BLEManager::minThreshold;
         effectiveMax = BLEManager::maxThreshold;
     }
 
+    // If the user RAISED the cap, re-arm so we charge toward the new max
+    // even if we were parked between min and max.
+    if (BLEManager::maxThreshold > lastMaxSeen) {
+        cappedAtMax = false;
+    }
+    lastMaxSeen = BLEManager::maxThreshold;
+
     bool chargeComplete = false;
 
-    // Hysteresis-style logic:
-    // If battery >= max -> stop charging
-    // If battery <= min -> start charging
-    // Between min and max -> keep current relay state
     if (batteryPercent > 0) {
-        if (BLEManager::savingMode){
-            if (batteryPercent<=effectiveMin){
-                RelayControl::turnOn();
-                chargingStarted=true;
-            }else if (batteryPercent <= effectiveMax) {
-                RelayControl::turnOn();
+        if (BLEManager::savingMode) {
+            if (batteryPercent >= effectiveMax) {
+                // Reached the cap -> stop and latch
+                if (chargingStarted) chargeComplete = true;
+                chargingStarted = false;
+                cappedAtMax = true;
+                RelayControl::turnOff();
+            } else if (batteryPercent <= effectiveMin) {
+                // Dropped to the floor -> resume
                 chargingStarted = true;
-            }else if (chargingStarted && batteryPercent > effectiveMax) {
-                chargeComplete=true;
-                chargingStarted =false;
-                RelayControl::turnOff();
-            }else{
-                RelayControl::turnOff();
+                cappedAtMax = false;
+                RelayControl::turnOn();
+            } else {
+                // Between min and max
+                if (cappedAtMax) {
+                    // Already hit max this cycle -> wait until min
+                    chargingStarted = false;
+                    RelayControl::turnOff();
+                } else {
+                    // Fresh start, or cap was just raised -> charge toward max
+                    chargingStarted = true;
+                    RelayControl::turnOn();
+                }
             }
-        }else{
+        } else {
+            cappedAtMax = false;
             chargingStarted = true;
             RelayControl::turnOn();
         }
@@ -122,7 +138,7 @@ void loop() {
         chargingStarted = true;
         RelayControl::turnOn();
     }
-
+  
 
     bool relayState = RelayControl::isOn();
 

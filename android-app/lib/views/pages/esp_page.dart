@@ -162,7 +162,6 @@ class _EspPageState extends State<EspPage> {
       // onBatteryStateChanged only fires on state transitions, not per-percent,
       // so re-read the live level here or the ESP acts on a stale %.
       final level = await _battery.batteryLevel;
-      phoneBatteryLevel = level;
 
       final payload =
           "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$level";
@@ -170,7 +169,10 @@ class _EspPageState extends State<EspPage> {
 
       await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
       if (!mounted) return;
-      setState(() => lastSyncPayload = payload);
+      setState(() {
+        phoneBatteryLevel = level;
+        lastSyncPayload = payload;
+      });
       debugPrint("Sent Sync: $payload");
     } catch (e) {
       debugPrint("Send Error: $e");
