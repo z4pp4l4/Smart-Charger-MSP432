@@ -310,6 +310,19 @@ class _EspPageState extends State<EspPage> {
       _addNotification(startedNotif);
     }
 
+    // 🎯 Target Reached — relay just turned OFF at/near max in saving mode
+    if (_previousRelayState == true &&
+        !isCharging &&
+        widget.profile.savingMode &&
+        extBatteryLevel >= widget.profile.maxThreshold - 2) {
+      _addNotification(SmartNotification(
+        type: NotificationType.phoneTargetReached,
+        title: "🎯 Target Reached",
+        message: "Battery reached $extBatteryLevel%. Charging paused to protect battery.",
+        color: Colors.teal,
+      ));
+    }
+
     _previousRelayState = isCharging;
   }
 
@@ -890,57 +903,64 @@ Future<void> _startScan() async {
 
   Widget _buildEstimatedTimeCard() {
     final target = widget.profile.savingMode ? widget.profile.maxThreshold : 100;
+    final reachedTarget = extBatteryLevel >= target;
 
-    if (!relayOn || extBatteryLevel >= target) {
+    // "Charging" = real current is flowing (INA219). The relay flag from the
+    // firmware is unreliable, so current is the source of truth.
+    final bool charging = current > 5 || relayOn;
+
+    if (charging && !reachedTarget) {
+      final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(
+        extBatteryLevel,
+        targetBattery: target,
+      );
+      final timeString = _formatDuration(estimatedMinutes);
       return _buildCard(
         child: Column(
           children: [
-            const Icon(Icons.timer, color: Colors.grey, size: 32),
+            const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
             const SizedBox(height: 12),
-            const Text("Not Charging", style: TextStyle(color: Colors.white54)),
+            Text(target >= 100 ? "Estimated Time to Full Charge" : "Estimated Time to Target",
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 8),
-            Text(
-              extBatteryLevel >= target
-                  ? (target >= 100 ? "Battery Full" : "Target Reached")
-                  : "Battery Not Charging",
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
+            Text(timeString,
+                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange)),
+            if (estimatedMinutes > 0) ...[
+              const SizedBox(height: 8),
+              Text("From ${extBatteryLevel}% → $target%",
+                  style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            ]
           ],
         ),
       );
     }
 
-    final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(
-      extBatteryLevel,
-      targetBattery: target,        // ← the key fix
-    );
-    final timeString = _formatDuration(estimatedMinutes);
-
+    final String headline;
+    final String subtitle;
+    final IconData icon;
+    if (reachedTarget) {
+      headline = target >= 100 ? "Battery Full" : "Target Reached";
+      subtitle = "Charging Paused";
+      icon = Icons.check_circle_outline;
+    } else {
+      headline = "Not Charging";
+      subtitle = "No current detected";
+      icon = Icons.timer_off_outlined;
+    }
     return _buildCard(
       child: Column(
         children: [
-          const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
+          Icon(icon, color: Colors.grey, size: 32),
           const SizedBox(height: 12),
-          Text(
-            target >= 100 ? "Estimated Time to Full Charge" : "Estimated Time to Target",
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
-          ),
+          Text(subtitle, style: const TextStyle(color: Colors.white54)),
           const SizedBox(height: 8),
-          Text(
-            timeString,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange),
-          ),
-          if (estimatedMinutes > 0) ...[
-            const SizedBox(height: 8),
-            Text(
-              "From ${extBatteryLevel}% → $target%",
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
-            )
-          ]
+          Text(headline,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
         ],
       ),
     );
   }
+
 
   Widget _buildNotificationHistory(List<SmartNotification> history) {
     // Show only the 3 most recent notifications in the small card
