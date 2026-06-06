@@ -227,7 +227,7 @@ class _EspPageState extends State<EspPage> {
         connectedDevice = device;
       });
 
-      // Start collecting data for charts
+      // Start collecting data for chart
       _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         if (mounted && isConnected && current > 5) {
           setState(() {
