@@ -159,14 +159,18 @@ class _EspPageState extends State<EspPage> {
   Future<void> _sendDataToESP32({bool force = false}) async {
     if (settingsCharacteristic == null || !isConnected) return;
     try {
-      String payload =
-          "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
+      // onBatteryStateChanged only fires on state transitions, not per-percent,
+      // so re-read the live level here or the ESP acts on a stale %.
+      final level = await _battery.batteryLevel;
+      phoneBatteryLevel = level;
+
+      final payload =
+          "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$level";
       if (!force && payload == lastSyncPayload) return;
+
       await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
       if (!mounted) return;
-      setState(() {
-        lastSyncPayload = payload;
-      });
+      setState(() => lastSyncPayload = payload);
       debugPrint("Sent Sync: $payload");
     } catch (e) {
       debugPrint("Send Error: $e");
@@ -875,22 +879,17 @@ Future<void> _startScan() async {
   }
 
   String _formatDuration(double minutes) {
-    if (!minutes.isFinite || minutes.isNaN || minutes < 0) return "N/A";
-
-    final safeMinutes = minutes;
-
-    int hours = safeMinutes.toInt() ~/ 60;
-    int mins = safeMinutes.toInt() % 60;
-
-    if (hours > 0) {
-      return "$hours h ${mins}m";
-    }
-
-    return "${mins}m";
+    if (!minutes.isFinite || minutes.isNaN) return "N/A";
+    if (minutes < 0) return "Calculating…";   // -1 from the estimator
+    final m = minutes.round();
+    final hours = m ~/ 60, mins = m % 60;
+    return hours > 0 ? "$hours h ${mins}m" : "${mins}m";
   }
 
   Widget _buildEstimatedTimeCard() {
-    if (!relayOn || extBatteryLevel >= 100) {
+    final target = widget.profile.savingMode ? widget.profile.maxThreshold : 100;
+
+    if (!relayOn || extBatteryLevel >= target) {
       return _buildCard(
         child: Column(
           children: [
@@ -899,7 +898,9 @@ Future<void> _startScan() async {
             const Text("Not Charging", style: TextStyle(color: Colors.white54)),
             const SizedBox(height: 8),
             Text(
-              extBatteryLevel >= 100 ? "Battery Full" : "Battery Not Charging",
+              extBatteryLevel >= target
+                  ? (target >= 100 ? "Battery Full" : "Target Reached")
+                  : "Battery Not Charging",
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
             ),
           ],
@@ -907,7 +908,10 @@ Future<void> _startScan() async {
       );
     }
 
-    final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(extBatteryLevel);
+    final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(
+      extBatteryLevel,
+      targetBattery: target,        // ← the key fix
+    );
     final timeString = _formatDuration(estimatedMinutes);
 
     return _buildCard(
@@ -915,7 +919,10 @@ Future<void> _startScan() async {
         children: [
           const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
           const SizedBox(height: 12),
-          const Text("Estimated Time to Full Charge", style: TextStyle(color: Colors.white54, fontSize: 12)),
+          Text(
+            target >= 100 ? "Estimated Time to Full Charge" : "Estimated Time to Target",
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
           const SizedBox(height: 8),
           Text(
             timeString,
@@ -924,7 +931,7 @@ Future<void> _startScan() async {
           if (estimatedMinutes > 0) ...[
             const SizedBox(height: 8),
             Text(
-              "From ${extBatteryLevel}% → ${widget.profile.savingMode ? widget.profile.maxThreshold : 100}%",
+              "From ${extBatteryLevel}% → $target%",
               style: const TextStyle(color: Colors.white54, fontSize: 11),
             )
           ]

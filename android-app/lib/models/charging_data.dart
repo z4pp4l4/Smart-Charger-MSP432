@@ -16,7 +16,13 @@ class ChargingDataPoint {
 
 class ChargingHistory {
   final List<ChargingDataPoint> dataPoints = [];
-  static const int maxDataPoints = 120; // Keep last 120 readings (~10 mins at 5s intervals)
+
+  // Keep ~10 minutes of history at 5s intervals.
+  static const int maxDataPoints = 120;
+
+  // Don't estimate until we have enough data for a stable result.
+  static const int _minPoints = 5;
+  static const int _minSpanSeconds = 60;
 
   void addDataPoint(double voltage, double current, double power, int batteryPercent) {
     dataPoints.add(
@@ -29,7 +35,6 @@ class ChargingHistory {
       ),
     );
 
-    // Keep only the last maxDataPoints
     if (dataPoints.length > maxDataPoints) {
       dataPoints.removeAt(0);
     }
@@ -39,38 +44,45 @@ class ChargingHistory {
     dataPoints.clear();
   }
 
-  /// Calculate estimated time to full charge in minutes
-  /// Returns -1 if unable to calculate
-  double calculateEstimatedTimeToCharge(int currentBattery, {int targetBattery = 100}) {
-    if (dataPoints.length < 5) return -1; // Need at least 5 data points
-
-    // Calculate average power in last few readings (mW)
-    final recentPoints = dataPoints.sublist(
-      (dataPoints.length - 5).clamp(0, dataPoints.length),
-    );
-
-    double avgPower = recentPoints.fold(0.0, (sum, p) => sum + p.power) / recentPoints.length;
-    double remainingEnergy = (targetBattery - currentBattery) * 50; // ~50 mWh per 1%
-    double timeToCharge = remainingEnergy / avgPower;
-
-    return timeToCharge; // in minutes
-  }
-
-  /// Get average charging rate in percentage per minute
+  /// Average charging rate in percent-per-minute, taken from the phone's
+  /// reported battery level over the recorded window.
+  /// Positive while charging, negative while discharging, 0 if unknown.
   double getAverageChargingRate() {
-    if (dataPoints.isEmpty) return 0;
-
     if (dataPoints.length < 2) return 0;
 
     final first = dataPoints.first;
     final last = dataPoints.last;
 
-    final timeDiffSeconds = last.timestamp.difference(first.timestamp).inSeconds;
-    if (timeDiffSeconds == 0) return 0;
+    final seconds = last.timestamp.difference(first.timestamp).inSeconds;
+    if (seconds <= 0) return 0;
 
-    final batteryDiff = (last.batteryPercent - first.batteryPercent).toDouble();
-    final timeInMinutes = timeDiffSeconds / 60;
+    final percentDiff = (last.batteryPercent - first.batteryPercent).toDouble();
+    final minutes = seconds / 60.0;
 
-    return batteryDiff / timeInMinutes; // % per minute
+    return percentDiff / minutes; // % per minute
+  }
+
+  /// Estimated minutes until the battery reaches [targetBattery].
+  /// In saving mode, pass the max threshold as [targetBattery]; otherwise 100.
+  ///
+  /// Returns:
+  ///    0  -> already at or past the target
+  ///   -1  -> can't estimate yet (not enough data, or not charging)
+  ///   >0  -> estimated minutes remaining
+  double calculateEstimatedTimeToCharge(int currentBattery, {int targetBattery = 100}) {
+    if (currentBattery >= targetBattery) return 0;
+
+    if (dataPoints.length < _minPoints) return -1;
+
+    final spanSeconds = dataPoints.last.timestamp
+        .difference(dataPoints.first.timestamp)
+        .inSeconds;
+    if (spanSeconds < _minSpanSeconds) return -1;
+
+    final rate = getAverageChargingRate(); // % per minute
+    if (rate <= 0) return -1;              // not charging, or % hasn't moved yet
+
+    final remainingPercent = targetBattery - currentBattery;
+    return remainingPercent / rate;        // minutes
   }
 }
