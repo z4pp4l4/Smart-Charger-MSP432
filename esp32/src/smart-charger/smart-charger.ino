@@ -7,7 +7,7 @@
 #define RELAY_PIN 6
 #define NOTIFY_INTERVAL 5000
 
-// Your ESP32 board I2C pins
+//the ESP32 board I2C pins
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
 
@@ -24,16 +24,10 @@ float lastVoltage_V = 0.0;
 float lastCurrent_mA = 0.0;
 float lastPower_mW = 0.0;
 
-// No temperature sensor for now
-float readBatteryTemperature() {
-    return 0.0;
-}
-
 int readBatteryPercent() {
     if (BLEManager::phoneBattery > 0) {
         return BLEManager::phoneBattery;
     }
-
     // If the phone has not sent battery value yet
     return 0;
 }
@@ -96,7 +90,7 @@ void loop() {
     }
 
     // If the user RAISED the cap, re-arm so we charge toward the new max
-    // even if we were parked between min and max.
+    // even if the charging is paused and level is between min and max.
     if (BLEManager::maxThreshold > lastMaxSeen) {
         cappedAtMax = false;
     }
@@ -107,13 +101,13 @@ void loop() {
     if (batteryPercent > 0) {
         if (BLEManager::savingMode) {
             if (batteryPercent >= effectiveMax) {
-                // Reached the cap -> stop and latch
+                // Reached maxTH, stop charging
                 if (chargingStarted) chargeComplete = true;
                 chargingStarted = false;
                 cappedAtMax = true;
                 RelayControl::turnOff();
             } else if (batteryPercent <= effectiveMin) {
-                // Dropped to the floor -> resume
+                // reached minTH -> resume
                 chargingStarted = true;
                 cappedAtMax = false;
                 RelayControl::turnOn();
@@ -124,7 +118,7 @@ void loop() {
                     chargingStarted = false;
                     RelayControl::turnOff();
                 } else {
-                    // Fresh start, or cap was just raised -> charge toward max
+                    // Fresh start, or maxTH was just raised -> charge toward max
                     chargingStarted = true;
                     RelayControl::turnOn();
                 }
@@ -147,8 +141,6 @@ void loop() {
     if (BLEManager::isConnected() && (now - lastNotifyTime >= NOTIFY_INTERVAL)) {
         lastNotifyTime = now;
 
-        // For now, we send current through the old current field.
-        // UI can later be updated to display voltage and power too.
         BLEManager::pushStatus(
                 batteryPercent,
                 lastVoltage_V,
@@ -174,6 +166,5 @@ void loop() {
             Serial.println("Charge completed: relay turned OFF.");
         }
     }
-
     delay(10);
 }

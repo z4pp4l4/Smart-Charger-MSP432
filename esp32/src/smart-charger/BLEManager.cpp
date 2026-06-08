@@ -1,6 +1,6 @@
 #include "BLEManager.h"
 
-// Define static variables
+//static variables
 BLECharacteristic* BLEManager::pSettingsChar = nullptr;
 BLECharacteristic* BLEManager::pStatusChar = nullptr;
 bool BLEManager::_connected = false;
@@ -32,7 +32,6 @@ void BLEManager::init(const char* deviceName) {
 
     pService->start();
 
-    // Fix: Explicitly add service UUID to advertising and set scan response
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
