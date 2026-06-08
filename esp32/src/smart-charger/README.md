@@ -15,5 +15,3 @@ Tools >
 - PSRAM: OPI PSRAM
 - Upload Speed: 115200
 - rest unchanged
-
-
