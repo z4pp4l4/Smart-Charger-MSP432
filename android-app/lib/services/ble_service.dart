@@ -25,17 +25,20 @@ class BleService {
 
   bool isConnected = false;
 
+  bool _savingMode = false;
+  int _minThreshold = 20;
+  int _maxThreshold = 80;
+
   void init() {
     _battery.onBatteryStateChanged.listen((_) async {
-      final level = await _battery.batteryLevel;
-      if (isConnected) syncSettings(false, 20, 80, level);
+      if (isConnected) await _push();
     });
   }
 
   Future<void> connect(BluetoothDevice device) async {
     await device.connect();
     connectedDevice = device;
-    
+
     List<BluetoothService> services = await device.discoverServices();
     for (var service in services) {
       if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
@@ -53,6 +56,7 @@ class BleService {
     }
     isConnected = true;
     _connectionController.add(true);
+    await _push(); // push current settings right after connecting
   }
 
   void _startListening(BluetoothCharacteristic char) async {
@@ -66,21 +70,35 @@ class BleService {
           'temp': double.tryParse(parts[1]) ?? 0.0,
           'current': int.tryParse(parts[2]) ?? 0,
         };
-
         if (parts.length >= 4) {
           status['relayOn'] = parts[3].trim() == '1';
         }
-
         _statusController.add(status);
       }
     });
   }
 
-  Future<void> syncSettings(bool manual, int min, int max, int phoneBat) async {
-    if (_settingsChar != null) {
-      String payload = "${manual ? "1" : "0"}:$min:$max:$phoneBat";
-      await _settingsChar!.write(utf8.encode(payload));
-    }
+  Future<void> _push() async {
+    if (_settingsChar == null || !isConnected) return;
+    final level = await _battery.batteryLevel;
+    final payload = "${_savingMode ? "1" : "0"}:$_minThreshold:$_maxThreshold:$level";
+    await _settingsChar!.write(utf8.encode(payload));
+  }
+
+  /// Update settings and immediately push them to the ESP.
+  /// Pass only the fields that changed; the rest keep their last value.
+  Future<void> updateSettings({bool? savingMode, int? min, int? max}) async {
+    if (savingMode != null) _savingMode = savingMode;
+    if (min != null) _minThreshold = min;
+    if (max != null) _maxThreshold = max;
+    await _push();
+  }
+
+  Future<void> syncSettings(bool savingMode, int min, int max, int phoneBat) async {
+    _savingMode = savingMode;
+    _minThreshold = min;
+    _maxThreshold = max;
+    await _push();
   }
 
   Future<void> disconnect() async {

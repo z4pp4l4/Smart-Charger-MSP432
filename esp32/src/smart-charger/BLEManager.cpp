@@ -1,6 +1,6 @@
 #include "BLEManager.h"
 
-// Define static variables
+//static variables
 BLECharacteristic* BLEManager::pSettingsChar = nullptr;
 BLECharacteristic* BLEManager::pStatusChar = nullptr;
 bool BLEManager::_connected = false;
@@ -28,10 +28,10 @@ void BLEManager::init(const char* deviceName) {
                       BLECharacteristic::PROPERTY_READ |
                       BLECharacteristic::PROPERTY_NOTIFY
                   );
+    pStatusChar->addDescriptor(new BLE2902());
 
     pService->start();
 
-    // Fix: Explicitly add service UUID to advertising and set scan response
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
@@ -42,12 +42,13 @@ void BLEManager::init(const char* deviceName) {
     Serial.println("BLE Manager Initialized with Advertising.");
 }
 
-void BLEManager::pushStatus (float voltage, int curr, float power, bool relayOn) {
+void BLEManager::pushStatus (int bat, float voltage, int curr, float power, bool relayOn) {
     if (_connected) {
         char payload[64];
 
-        // Format: voltage:current:power:relay
-        snprintf(payload, sizeof(payload), "%.2f:%d:%.1f:%d",
+        // Format: battery:voltage:current:power:relay
+        snprintf(payload, sizeof(payload), "%d:%.2f:%d:%.1f:%d",
+                 bat,
                  voltage,
                  curr,
                  power,

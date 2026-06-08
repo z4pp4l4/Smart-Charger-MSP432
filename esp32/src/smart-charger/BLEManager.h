@@ -4,6 +4,7 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <BLE2902.h>
 #include "RelayControl.h"
 
 // Professional 128-bit UUIDs
@@ -14,7 +15,7 @@
 class BLEManager {
 public:
     static void init(const char* deviceName);
-    static void pushStatus(float voltage, int curr, float power, bool relayOn);
+    static void pushStatus(int bat, float voltage, int curr, float power, bool relayOn);
     static bool isConnected();
     static bool savingMode;
     static int minThreshold;

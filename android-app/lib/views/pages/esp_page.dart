@@ -49,7 +49,7 @@ class _EspPageState extends State<EspPage> {
   // ESP32 Data (Live)
   int extBatteryLevel = 0;
   double voltage = 0.0;
-  int current = 0;
+  double current = 0.0;
   double power = 0.0;
   bool relayOn = false;
 
@@ -60,6 +60,8 @@ class _EspPageState extends State<EspPage> {
   // Smart Notifications
   late NotificationDetector notificationDetector;
   bool? _previousRelayState; // Null means unknown/initial state
+  bool _wasCharging = false;   // ← add, current-based charging tracker
+
 
   @override
   void initState() {
@@ -159,12 +161,18 @@ class _EspPageState extends State<EspPage> {
   Future<void> _sendDataToESP32({bool force = false}) async {
     if (settingsCharacteristic == null || !isConnected) return;
     try {
-      String payload =
-          "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$phoneBatteryLevel";
+      // onBatteryStateChanged only fires on state transitions, not per-percent,
+      // so re-read the live level here or the ESP acts on a stale %.
+      final level = await _battery.batteryLevel;
+
+      final payload =
+          "${widget.profile.savingMode ? "1" : "0"}:${widget.profile.minThreshold}:${widget.profile.maxThreshold}:$level";
       if (!force && payload == lastSyncPayload) return;
+
       await settingsCharacteristic!.write(utf8.encode(payload), withoutResponse: false);
       if (!mounted) return;
       setState(() {
+        phoneBatteryLevel = level;
         lastSyncPayload = payload;
       });
       debugPrint("Sent Sync: $payload");
@@ -219,13 +227,13 @@ class _EspPageState extends State<EspPage> {
         connectedDevice = device;
       });
 
-      // Start collecting data for charts
+      // Start collecting data for chart
       _dataCollectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted && isConnected && relayOn) {
+        if (mounted && isConnected && current > 5) {
           setState(() {
             chargingHistory.addDataPoint(
               voltage,
-              current.toDouble(),
+              current,
               power,
               extBatteryLevel,
             );
@@ -253,7 +261,7 @@ class _EspPageState extends State<EspPage> {
         if (parts.length >= 5) {
           final newExtBatteryLevel = int.tryParse(parts[0]) ?? extBatteryLevel;
           final newVoltage = double.tryParse(parts[1]) ?? voltage;
-          final newCurrent = int.tryParse(parts[2]) ?? current;
+          final newCurrent = double.tryParse(parts[2]) ?? current;
           final newPower = double.tryParse(parts[3]) ?? power;
           final newRelayState = parts[4].trim() == '1';
 
@@ -303,6 +311,21 @@ class _EspPageState extends State<EspPage> {
     if (startedNotif != null) {
       _addNotification(startedNotif);
     }
+
+    // 🎯 Target Reached — current just stopped flowing at/near max in saving mode
+    final bool chargingNow = current > 5; // mA, same threshold as the card
+    if (_wasCharging &&
+        !chargingNow &&
+        widget.profile.savingMode &&
+        extBatteryLevel >= widget.profile.maxThreshold - 2) {
+      _addNotification(SmartNotification(
+        type: NotificationType.phoneTargetReached,
+        title: "🎯 Target Reached",
+        message: "Battery reached $extBatteryLevel%. Charging paused to protect battery.",
+        color: Colors.teal,
+      ));
+    }
+    _wasCharging = chargingNow;
 
     _previousRelayState = isCharging;
   }
@@ -684,7 +707,7 @@ Future<void> _startScan() async {
                       const SizedBox(height: 20),
                       Row(
                         children: [
-                          Expanded(child: _infoCard(Icons.flash_on, "Current", "$current mA", Colors.blue)),
+                          Expanded(child: _infoCard(Icons.flash_on, "Current","${current.toStringAsFixed(1)} mA", Colors.blue)),
                           const SizedBox(width: 12),
                           Expanded(child: _infoCard(Icons.bolt, "Voltage", "${voltage.toStringAsFixed(2)} V", Colors.orange)),
                         ],
@@ -858,7 +881,7 @@ Future<void> _startScan() async {
                 LineChartBarData(
                   spots: List.generate(
                     dataPoints.length,
-                    (i) => FlSpot(i.toDouble(), dataPoints[i].current.toDouble()),
+                    (i) => FlSpot(i.toDouble(), dataPoints[i].current),
                   ),
                   isCurved: true,
                   color: Colors.blue,
@@ -875,63 +898,73 @@ Future<void> _startScan() async {
   }
 
   String _formatDuration(double minutes) {
-    if (!minutes.isFinite || minutes.isNaN || minutes < 0) return "N/A";
-
-    final safeMinutes = minutes;
-
-    int hours = safeMinutes.toInt() ~/ 60;
-    int mins = safeMinutes.toInt() % 60;
-
-    if (hours > 0) {
-      return "$hours h ${mins}m";
-    }
-
-    return "${mins}m";
+    if (!minutes.isFinite || minutes.isNaN) return "N/A";
+    if (minutes < 0) return "Calculating…";   // -1 from the estimator
+    final m = minutes.round();
+    final hours = m ~/ 60, mins = m % 60;
+    return hours > 0 ? "$hours h ${mins}m" : "${mins}m";
   }
 
   Widget _buildEstimatedTimeCard() {
-    if (!relayOn || extBatteryLevel >= 100) {
+    final target = widget.profile.savingMode ? widget.profile.maxThreshold : 100;
+    final reachedTarget = extBatteryLevel >= target;
+
+    // "Charging" = real current is flowing (INA219). The relay flag from the
+    // firmware is unreliable, so current is the source of truth.
+    final bool charging = current > 5 || relayOn;
+
+    if (charging && !reachedTarget) {
+      final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(
+        extBatteryLevel,
+        targetBattery: target,
+      );
+      final timeString = _formatDuration(estimatedMinutes);
       return _buildCard(
         child: Column(
           children: [
-            const Icon(Icons.timer, color: Colors.grey, size: 32),
+            const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
             const SizedBox(height: 12),
-            const Text("Not Charging", style: TextStyle(color: Colors.white54)),
+            Text(target >= 100 ? "Estimated Time to Full Charge" : "Estimated Time to Target",
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 8),
-            Text(
-              extBatteryLevel >= 100 ? "Battery Full" : "Battery Not Charging",
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
+            Text(timeString,
+                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange)),
+            if (estimatedMinutes > 0) ...[
+              const SizedBox(height: 8),
+              Text("From ${extBatteryLevel}% → $target%",
+                  style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            ]
           ],
         ),
       );
     }
 
-    final estimatedMinutes = chargingHistory.calculateEstimatedTimeToCharge(extBatteryLevel);
-    final timeString = _formatDuration(estimatedMinutes);
-
+    final String headline;
+    final String subtitle;
+    final IconData icon;
+    if (reachedTarget) {
+      headline = target >= 100 ? "Battery Full" : "Target Reached";
+      subtitle = "Charging Paused";
+      icon = Icons.check_circle_outline;
+    } else {
+      headline = "Not Charging";
+      subtitle = "No current detected";
+      icon = Icons.timer_off_outlined;
+    }
     return _buildCard(
       child: Column(
         children: [
-          const Icon(Icons.timer_outlined, color: Colors.orange, size: 32),
+          Icon(icon, color: Colors.grey, size: 32),
           const SizedBox(height: 12),
-          const Text("Estimated Time to Full Charge", style: TextStyle(color: Colors.white54, fontSize: 12)),
+          Text(subtitle, style: const TextStyle(color: Colors.white54)),
           const SizedBox(height: 8),
-          Text(
-            timeString,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange),
-          ),
-          if (estimatedMinutes > 0) ...[
-            const SizedBox(height: 8),
-            Text(
-              "From ${extBatteryLevel}% → ${widget.profile.savingMode ? widget.profile.maxThreshold : 100}%",
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
-            )
-          ]
+          Text(headline,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
         ],
       ),
     );
   }
+
 
   Widget _buildNotificationHistory(List<SmartNotification> history) {
     // Show only the 3 most recent notifications in the small card

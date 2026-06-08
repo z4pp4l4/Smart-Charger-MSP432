@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import '../../models/user_profile.dart';
+import '../../services/ble_service.dart';
 
 class PhonePage extends StatefulWidget {
   final String username;
@@ -81,6 +82,15 @@ class _PhonePageState extends State<PhonePage>
       });
     }
   }
+
+  void _pushToEsp() {
+    BleService().updateSettings(
+      savingMode: _savingMode,
+      min: _minThreshold,
+      max: _maxThreshold,
+    );
+  }
+
 
   void _syncProfile() {
     final updatedProfile = UserProfile(
@@ -360,6 +370,7 @@ class _PhonePageState extends State<PhonePage>
                 onChanged: (v) {
                   setState(() => _savingMode = v);
                   _syncProfile();
+                  _pushToEsp();
                 },
                 activeColor: Colors.teal,
               ),
@@ -394,8 +405,11 @@ class _PhonePageState extends State<PhonePage>
                     onChanged: (v) {
                       if (v < _maxThreshold) {
                         setState(() => _minThreshold = v);
-                        _syncProfile();
                       }
+                    },
+                    onChangeEnd: (v) {       // ← new
+                      _syncProfile();
+                      _pushToEsp();
                     },
                   ),
                   const SizedBox(height: 20),
@@ -407,10 +421,15 @@ class _PhonePageState extends State<PhonePage>
                     onChanged: (v) {
                       if (v > _minThreshold) {
                         setState(() => _maxThreshold = v);
-                        _syncProfile();
                       }
                     },
+                    onChangeEnd: (v) {       // ← new
+                      _syncProfile();
+                      _pushToEsp();
+                    },
                   ),
+
+
                 ],
               ),
             ),
@@ -426,6 +445,8 @@ class _PhonePageState extends State<PhonePage>
     required Color color,
     required IconData icon,
     required ValueChanged<int> onChanged,
+    required ValueChanged<int> onChangeEnd,   // ← add
+
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -457,6 +478,7 @@ class _PhonePageState extends State<PhonePage>
             max: 100,
             divisions: 100,
             onChanged: (v) => onChanged(v.round()),
+            onChangeEnd: (v) => onChangeEnd(v.round()),   // ← add
           ),
         ),
       ],
